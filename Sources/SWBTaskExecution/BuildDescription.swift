@@ -13,6 +13,7 @@
 package import SWBCore
 package import SWBUtil
 import struct Foundation.Data
+import struct Foundation.Date
 package import struct SWBProtocol.BuildDescriptionID
 package import struct SWBProtocol.BuildOperationTaskEnded
 package import struct SWBProtocol.TargetDependencyRelationship

@@ -149,7 +149,7 @@ package final class BuildDescriptionManager: Sendable {
     package static func constructBuildDescription(_ planRequest: BuildPlanRequest, signature: BuildDescriptionSignature, inDirectory cacheDir: Path? = nil, fs: any FSProxy, bypassActualTasks: Bool = false, clientDelegate: any TaskPlanningClientDelegate, constructionDelegate: any BuildDescriptionConstructionDelegate) async throws -> BuildDescription? {
         let phase = PerformancePhase(name: "constructBuildDescription (static, main)", details: [
             "signature": signature.asString,
-            "bypassActualTasks": bypassActualTasks
+            "bypassActualTasks": "\(bypassActualTasks)"
         ])
         defer { phase.end() }
 
@@ -366,8 +366,8 @@ package final class BuildDescriptionManager: Sendable {
     package func getNewOrCachedBuildDescription(_ request: BuildDescriptionRequest, clientDelegate: any TaskPlanningClientDelegate, constructionDelegate: any BuildDescriptionConstructionDelegate) async throws -> BuildDescriptionRetrievalInfo? {
         let phase = PerformancePhase(name: "getNewOrCachedBuildDescription", details: [
             "requestType": String(describing: request),
-            "isForIndex": request.isForIndex,
-            "isForCachedOnly": request.isForCachedOnly
+            "isForIndex": "\(request.isForIndex)",
+            "isForCachedOnly": "\(request.isForCachedOnly)"
         ])
         defer { phase.end() }
 
