@@ -1229,15 +1229,33 @@ private class InProcessCommand: SWBLLBuild.ExternalCommand, SWBLLBuild.ExternalD
         if outputDelegate.result == nil {
             let duration = timer.elapsedTime()
             let metrics = SWBCore.CommandMetrics(utime: duration.microseconds, stime: duration.microseconds, maxRSS: 0, wcDuration: duration)
+
+            // Log task execution with detailed timing and result information
+            let resultString: String
             switch result {
             case .succeeded:
+                resultString = "succeeded"
                 outputDelegate.updateResult(.succeeded(metrics: metrics))
             case .failed:
+                resultString = "failed"
                 outputDelegate.updateResult(.exit(exitStatus: .exit(EXIT_FAILURE), metrics: metrics))
             default:
+                resultString = "other(\(result))"
                 // Not updating the result will update it in a callback from llbuild
                 break
             }
+
+            TaskExecutionLogger.shared.logTaskExecution(
+                ruleInfo: task.ruleInfo,
+                actionType: String(describing: type(of: action)),
+                duration: duration.seconds,
+                result: resultString,
+                metrics: (
+                    utime: TimeInterval(metrics.utime) / 1_000_000.0,
+                    stime: TimeInterval(metrics.stime) / 1_000_000.0,
+                    maxRSS: Int(metrics.maxRSS)
+                )
+            )
         }
 
         return result
