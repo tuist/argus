@@ -222,7 +222,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeBundleClients",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["bundleCount": clientsOfBundlesByTarget.count]
+            details: ["bundleCount": "\(clientsOfBundlesByTarget.count)"]
         )
 
         computeStart = Date()
@@ -230,7 +230,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeArtifactBundleInfo",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": artifactBundlesByTarget.count]
+            details: ["targetCount": "\(artifactBundlesByTarget.count)"]
         )
 
         computeStart = Date()
@@ -239,14 +239,14 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeImpartedBuildProperties",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": impartedBuildPropertiesByTarget.count]
+            details: ["targetCount": "\(impartedBuildPropertiesByTarget.count)"]
         )
         computeStart = Date()
         self.mergeableTargetsToMergingTargets = Self.computeMergeableLibraries(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
         BuildDescriptionPerformanceLogger.shared.log(
             "computeMergeableLibraries",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": mergeableTargetsToMergingTargets.count]
+            details: ["targetCount": "\(mergeableTargetsToMergingTargets.count)"]
         )
 
         computeStart = Date()
@@ -254,7 +254,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeProducingTargetsForProducts",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["productCount": productPathsToProducingTargets.count]
+            details: ["productCount": "\(productPathsToProducingTargets.count)"]
         )
 
         computeStart = Date()
@@ -262,7 +262,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "constructTargetGateNodes",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["nodeCount": targetGateNodes.count]
+            details: ["nodeCount": "\(targetGateNodes.count)"]
         )
 
         computeStart = Date()
@@ -270,7 +270,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeHostingRelationships",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["hostedCount": hostedTargetsForTargets.count, "hostCount": hostTargetForTargets.count]
+            details: ["hostedCount": "\(hostedTargetsForTargets.count)", "hostCount": "\(hostTargetForTargets.count)"]
         )
 
         computeStart = Date()
@@ -278,7 +278,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeDuplicateProductNames",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["duplicateCount": duplicatedProductNames.count]
+            details: ["duplicateCount": "\(duplicatedProductNames.count)"]
         )
 
         computeStart = Date()
@@ -286,7 +286,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeTargetsProducingEnclosingProducts",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": targetToProducingTargetForNearestEnclosingProduct.count]
+            details: ["targetCount": "\(targetToProducingTargetForNearestEnclosingProduct.count)"]
         )
 
         computeStart = Date()
@@ -294,7 +294,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeSwiftMacroImplementationDescriptors",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": swiftMacroImplementationDescriptorsByTarget.count]
+            details: ["targetCount": "\(swiftMacroImplementationDescriptorsByTarget.count)"]
         )
 
         computeStart = Date()
@@ -302,7 +302,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeTargetsRequiredToBuildForIndexing",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": targetsRequiredToBuildForIndexing.count]
+            details: ["targetCount": "\(targetsRequiredToBuildForIndexing.count)"]
         )
 
         computeStart = Date()
@@ -310,7 +310,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         BuildDescriptionPerformanceLogger.shared.log(
             "computeTargetsWhichShouldBuildModulesInInstallAPI",
             duration: Date().timeIntervalSince(computeStart),
-            details: ["targetCount": targetsWhichShouldBuildModulesDuringInstallAPI.count]
+            details: ["targetCount": "\(targetsWhichShouldBuildModulesDuringInstallAPI?.count ?? 0)"]
         )
 
         // Diagnostics reporting

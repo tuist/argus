@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import Foundation
+package import Foundation
 import SWBUtil
 import os
 
@@ -94,7 +94,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Log a phase start
-    func logPhaseStart(_ phase: String, details: [String: String] = [:]) {
+    package func logPhaseStart(_ phase: String, details: [String: String] = [:]) {
         lock.withLock {
             guard let handle = fileHandle else { return }
 
@@ -120,7 +120,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Log a phase end
-    func logPhaseEnd(_ phase: String, duration: TimeInterval, details: [String: String] = [:]) {
+    package func logPhaseEnd(_ phase: String, duration: TimeInterval, details: [String: String] = [:]) {
         lock.withLock {
             guard let handle = fileHandle else { return }
 
@@ -147,7 +147,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Measure and log a synchronous operation
-    func measure<T>(_ operation: String, details: [String: String] = [:], file: String = #file, line: Int = #line, block: () throws -> T) rethrows -> T {
+    package func measure<T>(_ operation: String, details: [String: String] = [:], file: String = #file, line: Int = #line, block: () throws -> T) rethrows -> T {
         let start = Date()
         defer {
             let duration = Date().timeIntervalSince(start)
@@ -157,7 +157,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Measure and log an async operation
-    func measure<T>(_ operation: String, details: [String: String] = [:], file: String = #file, line: Int = #line, block: () async throws -> T) async rethrows -> T {
+    package func measure<T>(_ operation: String, details: [String: String] = [:], file: String = #file, line: Int = #line, block: () async throws -> T) async rethrows -> T {
         let start = Date()
         defer {
             let duration = Date().timeIntervalSince(start)

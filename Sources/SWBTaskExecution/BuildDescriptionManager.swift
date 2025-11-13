@@ -169,8 +169,8 @@ package final class BuildDescriptionManager: Sendable {
                 return nil
             }
             BuildDescriptionPerformanceLogger.shared.log("BuildPlan creation", duration: Date().timeIntervalSince(planStart), details: [
-                "taskCount": plan.tasks.count,
-                "targetCount": plan.globalProductPlan.allTargets.count
+                "taskCount": "\(plan.tasks.count)",
+                "targetCount": "\(plan.globalProductPlan.allTargets.count)"
             ])
 
             // Write out diagnostics files to the file system, if we've been asked to do so.
@@ -190,8 +190,8 @@ package final class BuildDescriptionManager: Sendable {
     package static func constructBuildDescription(_ plan: BuildPlan, planRequest: BuildPlanRequest, signature: BuildDescriptionSignature, inDirectory path: Path, fs: any FSProxy, bypassActualTasks: Bool = false, planningDiagnostics: [ConfiguredTarget?: [Diagnostic]], delegate: any BuildDescriptionConstructionDelegate) async throws -> BuildDescription? {
         let phase = PerformancePhase(name: "constructBuildDescription (static, overload)", details: [
             "signature": signature.asString,
-            "taskCount": plan.tasks.count,
-            "targetCount": plan.globalProductPlan.allTargets.count
+            "taskCount": "\(plan.tasks.count)",
+            "targetCount": "\(plan.globalProductPlan.allTargets.count)"
         ])
         defer { phase.end() }
 
@@ -266,8 +266,8 @@ package final class BuildDescriptionManager: Sendable {
         let result = try await BuildDescription.construct(workspace: planRequest.workspaceContext.workspace, tasks: plan.tasks, path: path, signature: signature, buildCommand: planRequest.buildRequest.buildCommand, diagnostics: planningDiagnostics, indexingInfo: [], fs: fs, bypassActualTasks: bypassActualTasks, targetsBuildInParallel: buildGraph.targetsBuildInParallel, emitFrontendCommandLines: plan.emitFrontendCommandLines, moduleSessionFilePath: planRequest.workspaceContext.getModuleSessionFilePath(planRequest.buildRequest.parameters), invalidationPaths: plan.invalidationPaths, recursiveSearchPathResults: plan.recursiveSearchPathResults, copiedPathMap: plan.copiedPathMap, rootPathsPerTarget: rootPathsPerTarget, moduleCachePathsPerTarget: moduleCachePathsPerTarget, artifactInfoPerTarget: artifactInfoPerTarget, casValidationInfos: casValidationInfos.elements, staleFileRemovalIdentifierPerTarget: staleFileRemovalIdentifierPerTarget, settingsPerTarget: settingsPerTarget, delegate: delegate, targetDependencies: buildGraph.targetDependenciesByGuid, definingTargetsByModuleName: definingTargetsByModuleName, userPreferences: planRequest.workspaceContext.userPreferences)
         BuildDescriptionPerformanceLogger.shared.log("BuildDescription.construct()", duration: Date().timeIntervalSince(constructStart), details: [
             "signature": signature.asString,
-            "taskCount": plan.tasks.count,
-            "targetCount": buildGraph.allTargets.count
+            "taskCount": "\(plan.tasks.count)",
+            "targetCount": "\(buildGraph.allTargets.count)"
         ])
         return result
     }
@@ -398,7 +398,7 @@ package final class BuildDescriptionManager: Sendable {
         if let inMemoryDescription = getCachedBuildDescription(request: request, signature: signature, constructionDelegate: constructionDelegate) {
             BuildDescriptionPerformanceLogger.shared.log("In-memory cache HIT", duration: Date().timeIntervalSince(inMemoryStart), details: [
                 "signature": signature.asString,
-                "cacheSize": inMemoryCachedBuildDescriptions.count
+                "cacheSize": "\(inMemoryCachedBuildDescriptions.count)"
             ])
             constructionDelegate.updateProgress(statusMessage: request.workspaceContext.userPreferences.activityTextShorteningLevel == .full ? "Using in-memory description" : "Using build description from memory", showInLog: request.workspaceContext.userPreferences.enableDebugActivityLogs)
             buildDescription = inMemoryDescription
@@ -406,7 +406,7 @@ package final class BuildDescriptionManager: Sendable {
         } else {
             BuildDescriptionPerformanceLogger.shared.log("In-memory cache MISS", duration: Date().timeIntervalSince(inMemoryStart), details: [
                 "signature": signature.asString,
-                "cacheSize": inMemoryCachedBuildDescriptions.count
+                "cacheSize": "\(inMemoryCachedBuildDescriptions.count)"
             ])
             // No in-memory build description, attempt to load it from the on-disk cache, and fallback to building
             // otherwise.
@@ -557,7 +557,7 @@ package final class BuildDescriptionManager: Sendable {
                 BuildDescriptionPerformanceLogger.shared.log("On-disk cache HIT", duration: diskLoadDuration, details: [
                     "signature": signature.asString,
                     "path": onDiskPath.str,
-                    "taskCount": onDiskDesc.taskStore.taskCount
+                    "taskCount": "\(onDiskDesc.taskStore.taskCount)"
                 ])
                 constructionDelegate.updateProgress(statusMessage: messageShortening == .full ? "Using on-disk description" : "Using build description from disk", showInLog: request.workspaceContext.userPreferences.enableDebugActivityLogs)
                 BuildDescriptionManager.descriptionsLoaded.increment()
@@ -619,7 +619,7 @@ package final class BuildDescriptionManager: Sendable {
         }
         BuildDescriptionPerformanceLogger.shared.log("New build description constructed", duration: Date().timeIntervalSince(constructionStart), details: [
             "signature": signature.asString,
-            "taskCount": newDesc.taskStore.taskCount
+            "taskCount": "\(newDesc.taskStore.taskCount)"
         ])
 
         // Serialize and write the build description and related content to disk and purge any old descriptions. We do this on a background thread since this is just caching the description and nothing cares about the saved form until something comes in to ask for it and we don't already have it in memory.
@@ -651,7 +651,7 @@ package final class BuildDescriptionManager: Sendable {
             BuildDescriptionPerformanceLogger.shared.log("serializeBuildDescription", duration: Date().timeIntervalSince(serializationStart), details: [
                 "signature": buildDescription.signature.asString,
                 "path": buildDescription.packagePath.str,
-                "taskCount": buildDescription.taskStore.taskCount
+                "taskCount": "\(buildDescription.taskStore.taskCount)"
             ])
         }
 

@@ -1073,7 +1073,7 @@ extension BuildDescription {
         BuildDescriptionPerformanceLogger.shared.log(
             "Graph construction",
             duration: Date().timeIntervalSince(graphConstructStart),
-            details: ["taskCount": sortedTasks.count, "producerCount": producers.count]
+            details: ["taskCount": "\(sortedTasks.count)", "producerCount": "\(producers.count)"]
         )
 
         // Gather the collection of "mustPrecede" relationships to establish.
@@ -1115,7 +1115,7 @@ extension BuildDescription {
         BuildDescriptionPerformanceLogger.shared.log(
             "Must-precede relationships",
             duration: Date().timeIntervalSince(mustPrecedeStart),
-            details: ["relationshipCount": taskAdditionalInputs.count]
+            details: ["relationshipCount": "\(taskAdditionalInputs.count)"]
         )
 
         // Compute information on the mutating tasks, to use in rewrite the graph as part of description construction.
@@ -1160,7 +1160,7 @@ extension BuildDescription {
         BuildDescriptionPerformanceLogger.shared.log(
             "Mutable node identification",
             duration: Date().timeIntervalSince(mutableNodeAnalysisStart),
-            details: ["mutableNodeCount": mutableNodes.count, "additionalNodeCount": additionalNodes.count]
+            details: ["mutableNodeCount": "\(mutableNodes.count)", "additionalNodeCount": "\(additionalNodes.count)"]
         )
 
         // Find the creators of all of the mutable nodes.
@@ -1199,7 +1199,7 @@ extension BuildDescription {
         BuildDescriptionPerformanceLogger.shared.log(
             "Finding mutable node creators",
             duration: Date().timeIntervalSince(creatorFindingStart),
-            details: ["mutableNodeCount": mutableNodes.count]
+            details: ["mutableNodeCount": "\(mutableNodes.count)"]
         )
 
         // Construct the information used to edit the description, indexed by the task.
@@ -1266,7 +1266,7 @@ extension BuildDescription {
         BuildDescriptionPerformanceLogger.shared.log(
             "Mutating task ordering",
             duration: Date().timeIntervalSince(mutatingTaskOrderingStart),
-            details: ["mutatingTaskCount": mutatingTasks.count]
+            details: ["mutatingTaskCount": "\(mutatingTasks.count)"]
         )
 
         if SWBFeatureFlag.performOwnershipAnalysis.value == false {
@@ -1403,7 +1403,7 @@ extension BuildDescription {
         BuildDescriptionPerformanceLogger.shared.log(
             "Parallel task construction",
             duration: Date().timeIntervalSince(parallelTaskConstructionStart),
-            details: ["taskCount": sortedTasks.count, "maxParallelism": 100]
+            details: ["taskCount": "\(sortedTasks.count)", "maxParallelism": "100"]
         )
 
         // Diagnose attempts to define multiple producers (tasks) for an output.
