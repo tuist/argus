@@ -58,10 +58,10 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Log a performance event with timing information
-    func log(
+    package func log(
         _ operation: String,
         duration: TimeInterval,
-        details: [String: Any] = [:],
+        details: [String: String] = [:],
         file: String = #file,
         line: Int = #line
     ) {
@@ -94,7 +94,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Log a phase start
-    func logPhaseStart(_ phase: String, details: [String: Any] = [:]) {
+    func logPhaseStart(_ phase: String, details: [String: String] = [:]) {
         lock.withLock {
             guard let handle = fileHandle else { return }
 
@@ -120,7 +120,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Log a phase end
-    func logPhaseEnd(_ phase: String, duration: TimeInterval, details: [String: Any] = [:]) {
+    func logPhaseEnd(_ phase: String, duration: TimeInterval, details: [String: String] = [:]) {
         lock.withLock {
             guard let handle = fileHandle else { return }
 
@@ -147,7 +147,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Measure and log a synchronous operation
-    func measure<T>(_ operation: String, details: [String: Any] = [:], file: String = #file, line: Int = #line, block: () throws -> T) rethrows -> T {
+    func measure<T>(_ operation: String, details: [String: String] = [:], file: String = #file, line: Int = #line, block: () throws -> T) rethrows -> T {
         let start = Date()
         defer {
             let duration = Date().timeIntervalSince(start)
@@ -157,7 +157,7 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
     }
 
     /// Measure and log an async operation
-    func measure<T>(_ operation: String, details: [String: Any] = [:], file: String = #file, line: Int = #line, block: () async throws -> T) async rethrows -> T {
+    func measure<T>(_ operation: String, details: [String: String] = [:], file: String = #file, line: Int = #line, block: () async throws -> T) async rethrows -> T {
         let start = Date()
         defer {
             let duration = Date().timeIntervalSince(start)
@@ -171,16 +171,16 @@ package final class BuildDescriptionPerformanceLogger: @unchecked Sendable {
 package struct PerformancePhase {
     let name: String
     let startTime: Date
-    var details: [String: Any]
+    var details: [String: String]
 
-    package init(name: String, details: [String: Any] = [:]) {
+    package init(name: String, details: [String: String] = [:]) {
         self.name = name
         self.startTime = Date()
         self.details = details
         BuildDescriptionPerformanceLogger.shared.logPhaseStart(name, details: details)
     }
 
-    package func end(additionalDetails: [String: Any] = [:]) {
+    package func end(additionalDetails: [String: String] = [:]) {
         let duration = Date().timeIntervalSince(startTime)
         var allDetails = details
         allDetails.merge(additionalDetails) { _, new in new }

@@ -1039,6 +1039,7 @@ extension BuildDescription {
 
         // Construct the graph between nodes and tasks.
         delegate.updateProgress(statusMessage: messageShortening == .full ? "Creating build graph" : "Constructing build graph", showInLog: false)
+        let graphConstructStart = Date()
         var producers = Dictionary<Ref<any PlannedNode>, [any PlannedTask]>()
         var outputPathsPerTarget = Dictionary<ConfiguredTarget?, [Path]>()
         for (current, task) in sortedTasks.enumerated() {
@@ -1069,11 +1070,17 @@ extension BuildDescription {
                 diagnostics[task.forTarget, default: []].append(Diagnostic(behavior: .error, location: .unknown, data: DiagnosticData("unexpected task with no outputs: '\(task.ruleInfo.quotedDescription)'")))
             }
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Graph construction",
+            duration: Date().timeIntervalSince(graphConstructStart),
+            details: ["taskCount": sortedTasks.count, "producerCount": producers.count]
+        )
 
         // Gather the collection of "mustPrecede" relationships to establish.
         //
         // FIXME: We should just get llbuild to support must-follow and must-precede in terms of commands, then we could ditch all of this.
         delegate.updateProgress(statusMessage: messageShortening == .full ? "Constructing" : "Computing build graph information", showInLog: false)
+        let mustPrecedeStart = Date()
         var taskAdditionalInputs: [Ref<any PlannedTask>: BuildDescriptionBuilder.NodeList] = [:]
         for task in sortedTasks {
             if delegate.cancelled { return nil }
@@ -1105,6 +1112,11 @@ extension BuildDescription {
                 nodeList.nodes.append(contentsOf: taskOutputs)
             }
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Must-precede relationships",
+            duration: Date().timeIntervalSince(mustPrecedeStart),
+            details: ["relationshipCount": taskAdditionalInputs.count]
+        )
 
         // Compute information on the mutating tasks, to use in rewrite the graph as part of description construction.
         //
@@ -1118,6 +1130,7 @@ extension BuildDescription {
             /// The list of all tasks which mutate this node.
             var mutatingTasks = [any PlannedTask]()
         }
+        let mutableNodeAnalysisStart = Date()
         var mutableNodes = Dictionary<Ref<any PlannedNode>, MutableNodeInfo>()
         // `nodesToCreateOnlyIfMissing` are output nodes whose producer tasks should be run only if they do not exist. This uses the peculiar behavior of llbuild's 'is-mutating' property which does exactly this. These nodes are not actually mutated but are treated in this way because we don't want these tasks to run if their outputs already exist.
         var nodesToCreateOnlyIfMissing = Array<Ref<any PlannedNode>>()
@@ -1144,8 +1157,14 @@ extension BuildDescription {
                 }
             }
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Mutable node identification",
+            duration: Date().timeIntervalSince(mutableNodeAnalysisStart),
+            details: ["mutableNodeCount": mutableNodes.count, "additionalNodeCount": additionalNodes.count]
+        )
 
         // Find the creators of all of the mutable nodes.
+        let creatorFindingStart = Date()
         for (node, info) in mutableNodes {
             var creators = [any PlannedTask]()
             for task in producers[node]! {
@@ -1177,9 +1196,15 @@ extension BuildDescription {
                                childDiagnostics: childDiagnostics))
             }
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Finding mutable node creators",
+            duration: Date().timeIntervalSince(creatorFindingStart),
+            details: ["mutableNodeCount": mutableNodes.count]
+        )
 
         // Construct the information used to edit the description, indexed by the task.
         typealias MutatingTaskInfo = BuildDescriptionBuilder.MutatingTaskInfo
+        let mutatingTaskOrderingStart = Date()
         var mutatingTasks = Dictionary<Ref<any PlannedTask>, MutatingTaskInfo>()
         for (nodeRef, info) in mutableNodes {
             if delegate.cancelled { return nil }
@@ -1238,6 +1263,11 @@ extension BuildDescription {
                 producer = consumer
             }
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Mutating task ordering",
+            duration: Date().timeIntervalSince(mutatingTaskOrderingStart),
+            details: ["mutatingTaskCount": mutatingTasks.count]
+        )
 
         if SWBFeatureFlag.performOwnershipAnalysis.value == false {
             struct DirectoryOutputs {
@@ -1333,6 +1363,7 @@ extension BuildDescription {
 
         // Process tasks.
         // The order of the status messages will not be in the order of tasks executed as the following implementation uses multiple threads concurrently to process tasks
+        let parallelTaskConstructionStart = Date()
         if !sortedTasks.isEmpty {
             do {
                 try await withThrowingTaskGroup(of: Void.self) { group in
@@ -1369,6 +1400,11 @@ extension BuildDescription {
                 return nil
             }
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Parallel task construction",
+            duration: Date().timeIntervalSince(parallelTaskConstructionStart),
+            details: ["taskCount": sortedTasks.count, "maxParallelism": 100]
+        )
 
         // Diagnose attempts to define multiple producers (tasks) for an output.
         var outputsSet = Set<Ref<any PlannedNode>>() // for identifying duplicate output nodes across tasks
