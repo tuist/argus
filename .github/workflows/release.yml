@@ -98,9 +98,9 @@ jobs:
           ref: ${{ needs.release.outputs.commit-hash }}
 
       - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
+        uses: SwiftyLab/setup-swift@latest
         with:
-          swift-version: nightly-main
+          development: true
 
       - name: Build release binary
         run: |
