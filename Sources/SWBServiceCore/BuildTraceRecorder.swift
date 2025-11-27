@@ -153,6 +153,17 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                 timestamp: timestamp
             )
 
+        case let msg as DependencyGraphResponse:
+            let stringAdjacencyList = Dictionary(
+                uniqueKeysWithValues: msg.adjacencyList.map { (key, value) in
+                    (key.rawValue, value.map { $0.rawValue })
+                }
+            )
+            database.insertDependencyGraph(
+                buildId: buildTraceId,
+                adjacencyList: stringAdjacencyList
+            )
+
         default:
             break
         }

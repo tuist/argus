@@ -133,6 +133,15 @@ final class BuildTraceDatabase: @unchecked Sendable {
             FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
+        -- Dependency graph: Target dependencies for bottleneck analysis.
+        CREATE TABLE IF NOT EXISTS target_dependencies (
+            id INTEGER PRIMARY KEY,
+            build_id TEXT NOT NULL,
+            target_guid TEXT NOT NULL,
+            depends_on_guid TEXT NOT NULL,
+            FOREIGN KEY (build_id) REFERENCES builds(id)
+        );
+
         -- Indexes for common queries
         CREATE INDEX IF NOT EXISTS idx_build_targets_build_id ON build_targets(build_id);
         CREATE INDEX IF NOT EXISTS idx_build_tasks_build_id ON build_tasks(build_id);
@@ -141,6 +150,9 @@ final class BuildTraceDatabase: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_build_diagnostics_build_id ON build_diagnostics(build_id);
         CREATE INDEX IF NOT EXISTS idx_build_diagnostics_kind ON build_diagnostics(kind);
         CREATE INDEX IF NOT EXISTS idx_build_messages_build_id ON build_messages(build_id);
+        CREATE INDEX IF NOT EXISTS idx_target_dependencies_build_id ON target_dependencies(build_id);
+        CREATE INDEX IF NOT EXISTS idx_target_dependencies_target ON target_dependencies(target_guid);
+        CREATE INDEX IF NOT EXISTS idx_build_targets_guid ON build_targets(guid);
 
         -- Top-N layer: Views for common agent queries
         -- Slowest targets per build (pre-sorted)
@@ -332,6 +344,22 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
+    func insertDependencyGraph(buildId: String, adjacencyList: [String: [String]]) {
+        queue.async { [weak self] in
+            for (targetGuid, dependencies) in adjacencyList {
+                for dependsOnGuid in dependencies {
+                    self?.executeInsert(
+                        """
+                        INSERT INTO target_dependencies (build_id, target_guid, depends_on_guid)
+                        VALUES (?, ?, ?)
+                        """,
+                        buildId, targetGuid, dependsOnGuid
+                    )
+                }
+            }
+        }
+    }
+
     // MARK: - Query operations
 
     func queryBuildSummary(buildId: String) -> BuildSummary? {
@@ -457,23 +485,26 @@ final class BuildTraceDatabase: @unchecked Sendable {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return [] }
 
-            // Find targets where other targets started immediately after they ended
-            // This indicates a dependency relationship and potential bottleneck
+            // Find targets that are bottlenecks using the actual dependency graph.
+            // A bottleneck is a target that:
+            // 1. Takes a long time to compile
+            // 2. Has many other targets depending on it (blocking them from starting)
+            // The bottleneck_score = duration * dependent_count shows the total "cost" of this target
             let sql = """
                 SELECT
-                    t1.name as blocking_target,
-                    t1.duration_seconds,
-                    COUNT(DISTINCT t2.name) as blocked_count,
-                    GROUP_CONCAT(DISTINCT t2.name) as blocked_targets
-                FROM build_targets t1
-                JOIN build_targets t2 ON t1.build_id = t2.build_id
-                    AND t1.name != t2.name
-                    AND t2.started_at >= t1.ended_at
-                    AND julianday(t2.started_at) - julianday(t1.ended_at) < 0.00001
-                WHERE t1.build_id = ? AND t1.duration_seconds IS NOT NULL
-                GROUP BY t1.name, t1.duration_seconds
-                HAVING blocked_count > 0
-                ORDER BY t1.duration_seconds * blocked_count DESC
+                    t.name as target_name,
+                    t.project_name,
+                    t.duration_seconds,
+                    COUNT(td.target_guid) as dependent_count,
+                    GROUP_CONCAT(t2.name) as blocked_targets,
+                    ROUND(t.duration_seconds * COUNT(td.target_guid), 2) as bottleneck_score
+                FROM build_targets t
+                LEFT JOIN target_dependencies td ON t.guid = td.depends_on_guid AND t.build_id = td.build_id
+                LEFT JOIN build_targets t2 ON td.target_guid = t2.guid AND td.build_id = t2.build_id
+                WHERE t.build_id = ? AND t.duration_seconds IS NOT NULL
+                GROUP BY t.guid, t.name, t.project_name, t.duration_seconds
+                HAVING dependent_count > 0
+                ORDER BY bottleneck_score DESC
                 LIMIT 10
                 """
             var statement: OpaquePointer?
@@ -484,11 +515,11 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
             var results: [TargetBottleneck] = []
             while sqlite3_step(statement) == SQLITE_ROW {
-                let blockedTargetsStr = sqlite3_column_type(statement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 3)) : ""
+                let blockedTargetsStr = sqlite3_column_type(statement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 4)) : ""
                 results.append(TargetBottleneck(
                     targetName: String(cString: sqlite3_column_text(statement, 0)),
-                    durationSeconds: sqlite3_column_double(statement, 1),
-                    blockedCount: Int(sqlite3_column_int(statement, 2)),
+                    durationSeconds: sqlite3_column_double(statement, 2),
+                    blockedCount: Int(sqlite3_column_int(statement, 3)),
                     blockedTargets: blockedTargetsStr.split(separator: ",").map(String.init)
                 ))
             }
@@ -501,47 +532,103 @@ final class BuildTraceDatabase: @unchecked Sendable {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return [] }
 
-            // Get targets ordered by end time to reconstruct the critical path
-            // The critical path is the sequence of targets that determined the total build time
-            let sql = """
-                SELECT name, project_name, started_at, ended_at, duration_seconds
+            // Build the dependency graph and compute the critical path.
+            // The critical path is the longest chain of dependencies that determines
+            // the minimum possible build time.
+
+            // First, get all targets with their durations
+            var targetDurations: [String: (name: String, projectName: String?, duration: Double, guid: String)] = [:]
+            let targetsSql = """
+                SELECT guid, name, project_name, duration_seconds
                 FROM build_targets
                 WHERE build_id = ? AND duration_seconds IS NOT NULL
-                ORDER BY ended_at DESC
                 """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
-            defer { sqlite3_finalize(statement) }
+            var targetsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, targetsSql, -1, &targetsStatement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(targetsStatement) }
 
-            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(targetsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
 
-            var allTargets: [(name: String, projectName: String?, startedAt: String, endedAt: String, duration: Double)] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                allTargets.append((
-                    name: String(cString: sqlite3_column_text(statement, 0)),
-                    projectName: sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil,
-                    startedAt: String(cString: sqlite3_column_text(statement, 2)),
-                    endedAt: String(cString: sqlite3_column_text(statement, 3)),
-                    duration: sqlite3_column_double(statement, 4)
-                ))
+            while sqlite3_step(targetsStatement) == SQLITE_ROW {
+                let guid = String(cString: sqlite3_column_text(targetsStatement, 0))
+                let name = String(cString: sqlite3_column_text(targetsStatement, 1))
+                let projectName = sqlite3_column_type(targetsStatement, 2) != SQLITE_NULL ? String(cString: sqlite3_column_text(targetsStatement, 2)) : nil
+                let duration = sqlite3_column_double(targetsStatement, 3)
+                targetDurations[guid] = (name, projectName, duration, guid)
             }
 
-            // Build critical path by finding the chain of targets that blocked each other
-            var criticalPath: [CriticalPathNode] = []
-            var currentEndTime: String? = nil
+            // Get dependencies
+            var dependencies: [String: [String]] = [:]
+            let depsSql = """
+                SELECT target_guid, depends_on_guid
+                FROM target_dependencies
+                WHERE build_id = ?
+                """
+            var depsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, depsSql, -1, &depsStatement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(depsStatement) }
 
-            for target in allTargets {
-                if currentEndTime == nil || target.endedAt <= currentEndTime! {
-                    criticalPath.append(CriticalPathNode(
-                        targetName: target.name,
-                        projectName: target.projectName,
-                        durationSeconds: target.duration
-                    ))
-                    currentEndTime = target.startedAt
+            sqlite3_bind_text(depsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            while sqlite3_step(depsStatement) == SQLITE_ROW {
+                let targetGuid = String(cString: sqlite3_column_text(depsStatement, 0))
+                let dependsOnGuid = String(cString: sqlite3_column_text(depsStatement, 1))
+                dependencies[targetGuid, default: []].append(dependsOnGuid)
+            }
+
+            // Compute longest path to each target using dynamic programming
+            var memo: [String: (Double, [String])] = [:] // guid -> (total_duration, path)
+
+            func longestPath(_ guid: String) -> (Double, [String]) {
+                if let cached = memo[guid] { return cached }
+                guard let target = targetDurations[guid] else { return (0, []) }
+
+                let deps = dependencies[guid] ?? []
+                if deps.isEmpty {
+                    let result = (target.duration, [guid])
+                    memo[guid] = result
+                    return result
+                }
+
+                var maxDuration = 0.0
+                var maxPath: [String] = []
+                for dep in deps {
+                    let (depDuration, depPath) = longestPath(dep)
+                    if depDuration > maxDuration {
+                        maxDuration = depDuration
+                        maxPath = depPath
+                    }
+                }
+
+                let result = (maxDuration + target.duration, maxPath + [guid])
+                memo[guid] = result
+                return result
+            }
+
+            // Find the target with the longest total path
+            var criticalGuid: String? = nil
+            var criticalDuration = 0.0
+
+            for guid in targetDurations.keys {
+                let (duration, _) = longestPath(guid)
+                if duration > criticalDuration {
+                    criticalDuration = duration
+                    criticalGuid = guid
                 }
             }
 
-            return criticalPath.reversed()
+            // Build the result
+            guard let finalGuid = criticalGuid else { return [] }
+            let (_, path) = longestPath(finalGuid)
+
+            return path.compactMap { guid in
+                guard let target = targetDurations[guid] else { return nil }
+                return CriticalPathNode(
+                    targetName: target.name,
+                    projectName: target.projectName,
+                    durationSeconds: target.duration
+                )
+            }
         }
     }
 
