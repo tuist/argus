@@ -3,7 +3,7 @@
 
 [remote.github]
 owner = "tuist"
-repo = "swift-build"
+repo = "argus"
 # token = ""
 
 [changelog]
