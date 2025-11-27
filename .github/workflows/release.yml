@@ -97,10 +97,10 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.commit-hash }}
 
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
         with:
-          xcode-version: '16.1'
+          swift-version: nightly-main
 
       - name: Build release binary
         run: |
