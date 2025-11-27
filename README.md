@@ -31,6 +31,8 @@ When running Xcode builds, use Argus to capture and analyze build data:
 
 3. Use --json flag for programmatic access:
    argus trace summary --build latest --json
+
+4. Run `argus trace --help` to discover all available commands.
 ```
 
 ## License
