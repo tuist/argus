@@ -19,18 +19,31 @@ import SWBUtil
 /// The recorder captures structured build data that can be queried by AI agents
 /// or other tools to understand build performance, failures, and patterns.
 ///
-/// Enable recording by setting the `SWB_BUILD_TRACE_PATH` environment variable
-/// to the path where the SQLite database should be created.
+/// Recording is enabled by default, storing traces at:
+/// `~/Library/Developer/Xcode/BuildTraces/traces.db`
+///
+/// Override the path by setting the `SWB_BUILD_TRACE_PATH` environment variable.
+/// Disable recording by setting `SWB_BUILD_TRACE_ENABLED=0`.
 ///
 /// Optionally set `SWB_BUILD_TRACE_ID` to provide a custom build identifier
 /// for correlating builds with external invocations.
 public final class BuildTraceRecorder: @unchecked Sendable {
+    /// The default path for the build trace database.
+    private static let defaultPath: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/Developer/Xcode/BuildTraces/traces.db"
+    }()
+
     /// The shared recorder instance, if recording is enabled.
     public static let shared: BuildTraceRecorder? = {
-        guard let path = ProcessInfo.processInfo.environment["SWB_BUILD_TRACE_PATH"] else {
+        if ProcessInfo.processInfo.environment["SWB_BUILD_TRACE_ENABLED"] == "0" {
             return nil
         }
+        let path = ProcessInfo.processInfo.environment["SWB_BUILD_TRACE_PATH"] ?? defaultPath
         do {
+            // Ensure the directory exists
+            let directory = (path as NSString).deletingLastPathComponent
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             return try BuildTraceRecorder(databasePath: path)
         } catch {
             fputs("Warning: Failed to initialize build trace recorder: \(error)\n", stderr)
