@@ -8,3 +8,6 @@
 .swift-version
 CODEOWNERS
 Package.swift
+.mise.toml
+cliff.toml
+CHANGELOG.md

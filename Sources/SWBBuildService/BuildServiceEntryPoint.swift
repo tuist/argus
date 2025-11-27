@@ -40,6 +40,10 @@ private import SWBWindowsPlatform
 private struct Options {
     /// Whether the caller should exit after parsing options.  This is set to `true` when the `--help` option is parsed.
     var exit = false
+    /// Whether the trace subcommand was invoked.
+    var traceCommand = false
+    /// Arguments for the trace subcommand.
+    var traceArguments: [String] = []
 
     init(commandLine: [String]) throws {
         func warning(_ message: String) {
@@ -59,7 +63,16 @@ private struct Options {
                 print((OutputByteStream()
                         <<< "Swift Build Build Service\n"
                         <<< "\n"
-                        <<< "  Read the source for help.").bytes.asString)
+                        <<< "Usage:\n"
+                        <<< "  SWBBuildService              Start the build service\n"
+                        <<< "  SWBBuildService trace <cmd>  Query build trace data\n"
+                        <<< "\n"
+                        <<< "Run 'SWBBuildService trace help' for trace command usage.").bytes.asString)
+                exit = true
+
+            case "trace":
+                traceCommand = true
+                traceArguments = Array(generator)
                 exit = true
 
             default:
@@ -73,6 +86,14 @@ extension BuildService {
     /// Starts the build service. This should be invoked _only_ from the SWBBuildService executable as its direct entry point.
     package static func main() async -> Never {
         let arguments = CommandLine.arguments
+
+        // Handle trace subcommand before starting the service
+        if arguments.count >= 2 && arguments[1] == "trace" {
+            let traceArgs = Array(arguments.dropFirst(2))
+            _ = BuildTraceCLI.run(arguments: traceArgs)
+            exit(EXIT_SUCCESS)
+        }
+
         do {
             try await Service.main { inputFD, outputFD in
                 // Launch the Swift Build service.

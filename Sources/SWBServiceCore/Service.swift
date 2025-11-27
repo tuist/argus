@@ -118,6 +118,9 @@ open class Service: @unchecked Sendable {
     public func send(_ channel: UInt64, _ message: any Message) {
         Service.messagesSent.increment()
 
+        // Record the message to the build trace database if enabled.
+        BuildTraceRecorder.shared?.record(message)
+
         // FIXME: We could in theory encode directly onto the stream.
         connection.send(channel, MsgPackSerializer.serialize(IPCMessage(message)))
     }
