@@ -64,14 +64,14 @@ public final class BuildTraceRecorder: @unchecked Sendable {
         switch message {
         case let msg as BuildOperationStarted:
             database.insertBuild(
-                traceId: buildTraceId,
-                buildId: msg.id,
+                buildId: buildTraceId,
+                internalBuildId: msg.id,
                 startedAt: timestamp
             )
 
         case let msg as BuildOperationEnded:
             database.updateBuildEnded(
-                buildId: msg.id,
+                buildId: buildTraceId,
                 endedAt: timestamp,
                 status: msg.status.traceDescription,
                 metrics: msg.metrics
@@ -79,7 +79,7 @@ public final class BuildTraceRecorder: @unchecked Sendable {
 
         case let msg as BuildOperationTargetStarted:
             database.insertTarget(
-                buildTraceId: buildTraceId,
+                buildId: buildTraceId,
                 targetId: msg.id,
                 guid: msg.guid,
                 name: msg.info.name,
@@ -90,20 +90,15 @@ public final class BuildTraceRecorder: @unchecked Sendable {
 
         case let msg as BuildOperationTargetEnded:
             database.updateTargetEnded(
+                buildId: buildTraceId,
                 targetId: msg.id,
-                endedAt: timestamp
-            )
-
-        case let msg as BuildOperationTargetUpToDate:
-            database.insertTargetUpToDate(
-                buildTraceId: buildTraceId,
-                guid: msg.guid,
-                timestamp: timestamp
+                endedAt: timestamp,
+                status: "succeeded"
             )
 
         case let msg as BuildOperationTaskStarted:
             database.insertTask(
-                buildTraceId: buildTraceId,
+                buildId: buildTraceId,
                 taskId: msg.id,
                 targetId: msg.targetID,
                 parentId: msg.parentID,
@@ -116,6 +111,7 @@ public final class BuildTraceRecorder: @unchecked Sendable {
 
         case let msg as BuildOperationTaskEnded:
             database.updateTaskEnded(
+                buildId: buildTraceId,
                 taskId: msg.id,
                 endedAt: timestamp,
                 status: msg.status.traceDescription,
@@ -124,7 +120,7 @@ public final class BuildTraceRecorder: @unchecked Sendable {
 
         case let msg as BuildOperationTaskUpToDate:
             database.insertTaskUpToDate(
-                buildTraceId: buildTraceId,
+                buildId: buildTraceId,
                 targetId: msg.targetID,
                 parentId: msg.parentID,
                 timestamp: timestamp
@@ -133,7 +129,7 @@ public final class BuildTraceRecorder: @unchecked Sendable {
         case let msg as BuildOperationDiagnosticEmitted:
             let (filePath, line, column) = msg.location.traceLocationDetails
             database.insertDiagnostic(
-                buildTraceId: buildTraceId,
+                buildId: buildTraceId,
                 kind: msg.kind.traceDescription,
                 message: msg.message,
                 filePath: filePath,
@@ -141,15 +137,6 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                 column: column,
                 targetId: msg.locationContext.traceTargetID,
                 taskId: msg.locationContext.traceTaskID,
-                timestamp: timestamp
-            )
-
-        case let msg as BuildOperationProgressUpdated:
-            database.insertProgress(
-                buildTraceId: buildTraceId,
-                targetName: msg.targetName,
-                statusMessage: msg.statusMessage,
-                percentComplete: msg.percentComplete,
                 timestamp: timestamp
             )
 

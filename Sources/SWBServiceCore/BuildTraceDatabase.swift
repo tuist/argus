@@ -52,8 +52,10 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
     private func createTables() throws {
         let schema = """
+        -- Summary layer: One row per build with pre-computed metrics.
+        -- An agent can get a high-level view of any build with minimal tokens.
         CREATE TABLE IF NOT EXISTS builds (
-            trace_id TEXT PRIMARY KEY,
+            id TEXT PRIMARY KEY,
             build_id INTEGER,
             started_at TEXT NOT NULL,
             ended_at TEXT,
@@ -62,12 +64,15 @@ final class BuildTraceDatabase: @unchecked Sendable {
             target_count INTEGER DEFAULT 0,
             task_count INTEGER DEFAULT 0,
             error_count INTEGER DEFAULT 0,
-            warning_count INTEGER DEFAULT 0
+            warning_count INTEGER DEFAULT 0,
+            cache_hit_count INTEGER DEFAULT 0,
+            cache_miss_count INTEGER DEFAULT 0
         );
 
-        CREATE TABLE IF NOT EXISTS targets (
+        -- Details layer: Individual targets with timing data.
+        CREATE TABLE IF NOT EXISTS build_targets (
             id INTEGER PRIMARY KEY,
-            trace_id TEXT NOT NULL,
+            build_id TEXT NOT NULL,
             target_id INTEGER NOT NULL,
             guid TEXT NOT NULL,
             name TEXT NOT NULL,
@@ -77,13 +82,14 @@ final class BuildTraceDatabase: @unchecked Sendable {
             ended_at TEXT,
             duration_seconds REAL,
             task_count INTEGER DEFAULT 0,
-            up_to_date INTEGER DEFAULT 0,
-            FOREIGN KEY (trace_id) REFERENCES builds(trace_id)
+            status TEXT,
+            FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
-        CREATE TABLE IF NOT EXISTS tasks (
+        -- Details layer: Individual tasks with timing and resource metrics.
+        CREATE TABLE IF NOT EXISTS build_tasks (
             id INTEGER PRIMARY KEY,
-            trace_id TEXT NOT NULL,
+            build_id TEXT NOT NULL,
             task_id INTEGER NOT NULL,
             target_id INTEGER,
             parent_id INTEGER,
@@ -95,16 +101,17 @@ final class BuildTraceDatabase: @unchecked Sendable {
             ended_at TEXT,
             status TEXT,
             duration_seconds REAL,
-            utime_microseconds INTEGER,
-            stime_microseconds INTEGER,
+            utime_usec INTEGER,
+            stime_usec INTEGER,
             max_rss_bytes INTEGER,
-            up_to_date INTEGER DEFAULT 0,
-            FOREIGN KEY (trace_id) REFERENCES builds(trace_id)
+            was_cache_hit INTEGER DEFAULT 0,
+            FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
-        CREATE TABLE IF NOT EXISTS diagnostics (
+        -- Details layer: Structured diagnostics with file locations.
+        CREATE TABLE IF NOT EXISTS build_diagnostics (
             id INTEGER PRIMARY KEY,
-            trace_id TEXT NOT NULL,
+            build_id TEXT NOT NULL,
             kind TEXT NOT NULL,
             message TEXT NOT NULL,
             file_path TEXT,
@@ -113,24 +120,57 @@ final class BuildTraceDatabase: @unchecked Sendable {
             target_id INTEGER,
             task_id INTEGER,
             timestamp TEXT NOT NULL,
-            FOREIGN KEY (trace_id) REFERENCES builds(trace_id)
+            FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
-        CREATE TABLE IF NOT EXISTS progress (
+        -- Raw layer: Original messages as JSON for debugging.
+        CREATE TABLE IF NOT EXISTS build_messages (
             id INTEGER PRIMARY KEY,
-            trace_id TEXT NOT NULL,
-            target_name TEXT,
-            status_message TEXT,
-            percent_complete REAL,
+            build_id TEXT NOT NULL,
+            message_type TEXT NOT NULL,
+            message_json TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            FOREIGN KEY (trace_id) REFERENCES builds(trace_id)
+            FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_targets_trace_id ON targets(trace_id);
-        CREATE INDEX IF NOT EXISTS idx_tasks_trace_id ON tasks(trace_id);
-        CREATE INDEX IF NOT EXISTS idx_tasks_target_id ON tasks(target_id);
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_trace_id ON diagnostics(trace_id);
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_kind ON diagnostics(kind);
+        -- Indexes for common queries
+        CREATE INDEX IF NOT EXISTS idx_build_targets_build_id ON build_targets(build_id);
+        CREATE INDEX IF NOT EXISTS idx_build_tasks_build_id ON build_tasks(build_id);
+        CREATE INDEX IF NOT EXISTS idx_build_tasks_target_id ON build_tasks(target_id);
+        CREATE INDEX IF NOT EXISTS idx_build_tasks_duration ON build_tasks(duration_seconds DESC);
+        CREATE INDEX IF NOT EXISTS idx_build_diagnostics_build_id ON build_diagnostics(build_id);
+        CREATE INDEX IF NOT EXISTS idx_build_diagnostics_kind ON build_diagnostics(kind);
+        CREATE INDEX IF NOT EXISTS idx_build_messages_build_id ON build_messages(build_id);
+
+        -- Top-N layer: Views for common agent queries
+        -- Slowest targets per build (pre-sorted)
+        CREATE VIEW IF NOT EXISTS slowest_targets AS
+        SELECT build_id, name, project_name, duration_seconds, task_count, status
+        FROM build_targets
+        WHERE duration_seconds IS NOT NULL
+        ORDER BY build_id, duration_seconds DESC;
+
+        -- Slowest tasks per build (pre-sorted)
+        CREATE VIEW IF NOT EXISTS slowest_tasks AS
+        SELECT build_id, task_name, execution_description, interesting_path,
+               duration_seconds, utime_usec, stime_usec, max_rss_bytes
+        FROM build_tasks
+        WHERE duration_seconds IS NOT NULL AND was_cache_hit = 0
+        ORDER BY build_id, duration_seconds DESC;
+
+        -- Recent errors per build
+        CREATE VIEW IF NOT EXISTS recent_errors AS
+        SELECT build_id, message, file_path, line, column_number, timestamp
+        FROM build_diagnostics
+        WHERE kind = 'error'
+        ORDER BY build_id, timestamp DESC;
+
+        -- Recent warnings per build
+        CREATE VIEW IF NOT EXISTS recent_warnings AS
+        SELECT build_id, message, file_path, line, column_number, timestamp
+        FROM build_diagnostics
+        WHERE kind = 'warning'
+        ORDER BY build_id, timestamp DESC;
         """
 
         try execute(schema)
@@ -138,16 +178,16 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
     // MARK: - Insert operations
 
-    func insertBuild(traceId: String, buildId: Int, startedAt: Date) {
+    func insertBuild(buildId: String, internalBuildId: Int, startedAt: Date) {
         queue.async { [weak self] in
             self?.executeInsert(
-                "INSERT OR REPLACE INTO builds (trace_id, build_id, started_at) VALUES (?, ?, ?)",
-                traceId, buildId, startedAt.iso8601String
+                "INSERT OR REPLACE INTO builds (id, build_id, started_at) VALUES (?, ?, ?)",
+                buildId, internalBuildId, startedAt.iso8601String
             )
         }
     }
 
-    func updateBuildEnded(buildId: Int, endedAt: Date, status: String, metrics: BuildOperationMetrics?) {
+    func updateBuildEnded(buildId: String, endedAt: Date, status: String, metrics: BuildOperationMetrics?) {
         queue.async { [weak self] in
             self?.executeUpdate(
                 """
@@ -155,11 +195,13 @@ final class BuildTraceDatabase: @unchecked Sendable {
                     ended_at = ?,
                     status = ?,
                     duration_seconds = (julianday(?) - julianday(started_at)) * 86400.0,
-                    target_count = (SELECT COUNT(*) FROM targets WHERE targets.trace_id = builds.trace_id),
-                    task_count = (SELECT COUNT(*) FROM tasks WHERE tasks.trace_id = builds.trace_id),
-                    error_count = (SELECT COUNT(*) FROM diagnostics WHERE diagnostics.trace_id = builds.trace_id AND kind = 'error'),
-                    warning_count = (SELECT COUNT(*) FROM diagnostics WHERE diagnostics.trace_id = builds.trace_id AND kind = 'warning')
-                WHERE build_id = ?
+                    target_count = (SELECT COUNT(*) FROM build_targets WHERE build_targets.build_id = builds.id),
+                    task_count = (SELECT COUNT(*) FROM build_tasks WHERE build_tasks.build_id = builds.id),
+                    error_count = (SELECT COUNT(*) FROM build_diagnostics WHERE build_diagnostics.build_id = builds.id AND kind = 'error'),
+                    warning_count = (SELECT COUNT(*) FROM build_diagnostics WHERE build_diagnostics.build_id = builds.id AND kind = 'warning'),
+                    cache_hit_count = (SELECT COUNT(*) FROM build_tasks WHERE build_tasks.build_id = builds.id AND was_cache_hit = 1),
+                    cache_miss_count = (SELECT COUNT(*) FROM build_tasks WHERE build_tasks.build_id = builds.id AND was_cache_hit = 0)
+                WHERE id = ?
                 """,
                 endedAt.iso8601String, status, endedAt.iso8601String, buildId
             )
@@ -167,7 +209,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
     }
 
     func insertTarget(
-        buildTraceId: String,
+        buildId: String,
         targetId: Int,
         guid: String,
         name: String,
@@ -178,43 +220,32 @@ final class BuildTraceDatabase: @unchecked Sendable {
         queue.async { [weak self] in
             self?.executeInsert(
                 """
-                INSERT INTO targets (trace_id, target_id, guid, name, project_name, configuration_name, started_at)
+                INSERT INTO build_targets (build_id, target_id, guid, name, project_name, configuration_name, started_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                buildTraceId, targetId, guid, name, projectName, configurationName, startedAt.iso8601String
+                buildId, targetId, guid, name, projectName, configurationName, startedAt.iso8601String
             )
         }
     }
 
-    func updateTargetEnded(targetId: Int, endedAt: Date) {
+    func updateTargetEnded(buildId: String, targetId: Int, endedAt: Date, status: String) {
         queue.async { [weak self] in
             self?.executeUpdate(
                 """
-                UPDATE targets SET
+                UPDATE build_targets SET
                     ended_at = ?,
+                    status = ?,
                     duration_seconds = (julianday(?) - julianday(started_at)) * 86400.0,
-                    task_count = (SELECT COUNT(*) FROM tasks WHERE tasks.target_id = ?)
-                WHERE target_id = ? AND ended_at IS NULL
+                    task_count = (SELECT COUNT(*) FROM build_tasks WHERE build_tasks.target_id = ? AND build_tasks.build_id = ?)
+                WHERE target_id = ? AND build_id = ? AND ended_at IS NULL
                 """,
-                endedAt.iso8601String, endedAt.iso8601String, targetId, targetId
-            )
-        }
-    }
-
-    func insertTargetUpToDate(buildTraceId: String, guid: String, timestamp: Date) {
-        queue.async { [weak self] in
-            self?.executeInsert(
-                """
-                INSERT INTO targets (trace_id, target_id, guid, name, started_at, up_to_date)
-                VALUES (?, 0, ?, '', ?, 1)
-                """,
-                buildTraceId, guid, timestamp.iso8601String
+                endedAt.iso8601String, status, endedAt.iso8601String, targetId, buildId, targetId, buildId
             )
         }
     }
 
     func insertTask(
-        buildTraceId: String,
+        buildId: String,
         taskId: Int,
         targetId: Int?,
         parentId: Int?,
@@ -227,48 +258,48 @@ final class BuildTraceDatabase: @unchecked Sendable {
         queue.async { [weak self] in
             self?.executeInsert(
                 """
-                INSERT INTO tasks (trace_id, task_id, target_id, parent_id, task_name, rule_info, execution_description, interesting_path, started_at)
+                INSERT INTO build_tasks (build_id, task_id, target_id, parent_id, task_name, rule_info, execution_description, interesting_path, started_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                buildTraceId, taskId, targetId, parentId, taskName, ruleInfo, executionDescription, interestingPath, startedAt.iso8601String
+                buildId, taskId, targetId, parentId, taskName, ruleInfo, executionDescription, interestingPath, startedAt.iso8601String
             )
         }
     }
 
-    func updateTaskEnded(taskId: Int, endedAt: Date, status: String, metrics: BuildOperationTaskEnded.Metrics?) {
+    func updateTaskEnded(buildId: String, taskId: Int, endedAt: Date, status: String, metrics: BuildOperationTaskEnded.Metrics?) {
         queue.async { [weak self] in
             self?.executeUpdate(
                 """
-                UPDATE tasks SET
+                UPDATE build_tasks SET
                     ended_at = ?,
                     status = ?,
                     duration_seconds = (julianday(?) - julianday(started_at)) * 86400.0,
-                    utime_microseconds = ?,
-                    stime_microseconds = ?,
+                    utime_usec = ?,
+                    stime_usec = ?,
                     max_rss_bytes = ?
-                WHERE task_id = ? AND ended_at IS NULL
+                WHERE task_id = ? AND build_id = ? AND ended_at IS NULL
                 """,
                 endedAt.iso8601String, status, endedAt.iso8601String,
                 metrics?.utime, metrics?.stime, metrics?.maxRSS,
-                taskId
+                taskId, buildId
             )
         }
     }
 
-    func insertTaskUpToDate(buildTraceId: String, targetId: Int?, parentId: Int?, timestamp: Date) {
+    func insertTaskUpToDate(buildId: String, targetId: Int?, parentId: Int?, timestamp: Date) {
         queue.async { [weak self] in
             self?.executeInsert(
                 """
-                INSERT INTO tasks (trace_id, task_id, target_id, parent_id, started_at, up_to_date)
+                INSERT INTO build_tasks (build_id, task_id, target_id, parent_id, started_at, was_cache_hit)
                 VALUES (?, 0, ?, ?, ?, 1)
                 """,
-                buildTraceId, targetId, parentId, timestamp.iso8601String
+                buildId, targetId, parentId, timestamp.iso8601String
             )
         }
     }
 
     func insertDiagnostic(
-        buildTraceId: String,
+        buildId: String,
         kind: String,
         message: String,
         filePath: String?,
@@ -281,28 +312,22 @@ final class BuildTraceDatabase: @unchecked Sendable {
         queue.async { [weak self] in
             self?.executeInsert(
                 """
-                INSERT INTO diagnostics (trace_id, kind, message, file_path, line, column_number, target_id, task_id, timestamp)
+                INSERT INTO build_diagnostics (build_id, kind, message, file_path, line, column_number, target_id, task_id, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                buildTraceId, kind, message, filePath, line, column, targetId, taskId, timestamp.iso8601String
+                buildId, kind, message, filePath, line, column, targetId, taskId, timestamp.iso8601String
             )
         }
     }
 
-    func insertProgress(
-        buildTraceId: String,
-        targetName: String?,
-        statusMessage: String,
-        percentComplete: Double,
-        timestamp: Date
-    ) {
+    func insertRawMessage(buildId: String, messageType: String, messageJson: String, timestamp: Date) {
         queue.async { [weak self] in
             self?.executeInsert(
                 """
-                INSERT INTO progress (trace_id, target_name, status_message, percent_complete, timestamp)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO build_messages (build_id, message_type, message_json, timestamp)
+                VALUES (?, ?, ?, ?)
                 """,
-                buildTraceId, targetName, statusMessage, percentComplete, timestamp.iso8601String
+                buildId, messageType, messageJson, timestamp.iso8601String
             )
         }
     }
