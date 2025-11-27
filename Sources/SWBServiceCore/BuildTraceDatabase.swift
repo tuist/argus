@@ -332,6 +332,260 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
+    // MARK: - Query operations
+
+    func queryBuildSummary(buildId: String) -> BuildSummary? {
+        queue.sync {
+            let sql = buildId == "latest"
+                ? "SELECT * FROM builds ORDER BY started_at DESC LIMIT 1"
+                : "SELECT * FROM builds WHERE id = ?"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(statement) }
+
+            if buildId != "latest" {
+                sqlite3_bind_text(statement, 1, buildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return BuildSummary(
+                id: String(cString: sqlite3_column_text(statement, 0)),
+                startedAt: String(cString: sqlite3_column_text(statement, 2)),
+                endedAt: sqlite3_column_type(statement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 3)) : nil,
+                status: sqlite3_column_type(statement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 4)) : nil,
+                durationSeconds: sqlite3_column_type(statement, 5) != SQLITE_NULL ? sqlite3_column_double(statement, 5) : nil,
+                targetCount: Int(sqlite3_column_int(statement, 6)),
+                taskCount: Int(sqlite3_column_int(statement, 7)),
+                errorCount: Int(sqlite3_column_int(statement, 8)),
+                warningCount: Int(sqlite3_column_int(statement, 9)),
+                cacheHitCount: Int(sqlite3_column_int(statement, 10)),
+                cacheMissCount: Int(sqlite3_column_int(statement, 11))
+            )
+        }
+    }
+
+    func queryErrors(buildId: String) -> [DiagnosticInfo] {
+        queryDiagnostics(buildId: buildId, kind: "error")
+    }
+
+    func queryWarnings(buildId: String) -> [DiagnosticInfo] {
+        queryDiagnostics(buildId: buildId, kind: "warning")
+    }
+
+    private func queryDiagnostics(buildId: String, kind: String) -> [DiagnosticInfo] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            let sql = "SELECT message, file_path, line, column_number FROM build_diagnostics WHERE build_id = ? AND kind = ? ORDER BY timestamp DESC"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(statement, 2, kind, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var results: [DiagnosticInfo] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append(DiagnosticInfo(
+                    message: String(cString: sqlite3_column_text(statement, 0)),
+                    filePath: sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil,
+                    line: sqlite3_column_type(statement, 2) != SQLITE_NULL ? Int(sqlite3_column_int(statement, 2)) : nil,
+                    column: sqlite3_column_type(statement, 3) != SQLITE_NULL ? Int(sqlite3_column_int(statement, 3)) : nil
+                ))
+            }
+            return results
+        }
+    }
+
+    func querySlowestTargets(buildId: String, limit: Int) -> [TargetTiming] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            let sql = "SELECT name, project_name, duration_seconds, task_count, status FROM slowest_targets WHERE build_id = ? LIMIT ?"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_int(statement, 2, Int32(limit))
+
+            var results: [TargetTiming] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append(TargetTiming(
+                    name: String(cString: sqlite3_column_text(statement, 0)),
+                    projectName: sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil,
+                    durationSeconds: sqlite3_column_double(statement, 2),
+                    taskCount: Int(sqlite3_column_int(statement, 3)),
+                    status: sqlite3_column_type(statement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 4)) : nil
+                ))
+            }
+            return results
+        }
+    }
+
+    func querySlowestTasks(buildId: String, limit: Int) -> [TaskTiming] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            let sql = "SELECT task_name, execution_description, interesting_path, duration_seconds, max_rss_bytes FROM slowest_tasks WHERE build_id = ? LIMIT ?"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_int(statement, 2, Int32(limit))
+
+            var results: [TaskTiming] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append(TaskTiming(
+                    taskName: sqlite3_column_type(statement, 0) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 0)) : nil,
+                    executionDescription: sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil,
+                    interestingPath: sqlite3_column_type(statement, 2) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 2)) : nil,
+                    durationSeconds: sqlite3_column_double(statement, 3),
+                    maxRssBytes: sqlite3_column_type(statement, 4) != SQLITE_NULL ? Int64(sqlite3_column_int64(statement, 4)) : nil
+                ))
+            }
+            return results
+        }
+    }
+
+    func queryBottlenecks(buildId: String) -> [TargetBottleneck] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            // Find targets where other targets started immediately after they ended
+            // This indicates a dependency relationship and potential bottleneck
+            let sql = """
+                SELECT
+                    t1.name as blocking_target,
+                    t1.duration_seconds,
+                    COUNT(DISTINCT t2.name) as blocked_count,
+                    GROUP_CONCAT(DISTINCT t2.name) as blocked_targets
+                FROM build_targets t1
+                JOIN build_targets t2 ON t1.build_id = t2.build_id
+                    AND t1.name != t2.name
+                    AND t2.started_at >= t1.ended_at
+                    AND julianday(t2.started_at) - julianday(t1.ended_at) < 0.00001
+                WHERE t1.build_id = ? AND t1.duration_seconds IS NOT NULL
+                GROUP BY t1.name, t1.duration_seconds
+                HAVING blocked_count > 0
+                ORDER BY t1.duration_seconds * blocked_count DESC
+                LIMIT 10
+                """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var results: [TargetBottleneck] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let blockedTargetsStr = sqlite3_column_type(statement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 3)) : ""
+                results.append(TargetBottleneck(
+                    targetName: String(cString: sqlite3_column_text(statement, 0)),
+                    durationSeconds: sqlite3_column_double(statement, 1),
+                    blockedCount: Int(sqlite3_column_int(statement, 2)),
+                    blockedTargets: blockedTargetsStr.split(separator: ",").map(String.init)
+                ))
+            }
+            return results
+        }
+    }
+
+    func queryCriticalPath(buildId: String) -> [CriticalPathNode] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            // Get targets ordered by end time to reconstruct the critical path
+            // The critical path is the sequence of targets that determined the total build time
+            let sql = """
+                SELECT name, project_name, started_at, ended_at, duration_seconds
+                FROM build_targets
+                WHERE build_id = ? AND duration_seconds IS NOT NULL
+                ORDER BY ended_at DESC
+                """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var allTargets: [(name: String, projectName: String?, startedAt: String, endedAt: String, duration: Double)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                allTargets.append((
+                    name: String(cString: sqlite3_column_text(statement, 0)),
+                    projectName: sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil,
+                    startedAt: String(cString: sqlite3_column_text(statement, 2)),
+                    endedAt: String(cString: sqlite3_column_text(statement, 3)),
+                    duration: sqlite3_column_double(statement, 4)
+                ))
+            }
+
+            // Build critical path by finding the chain of targets that blocked each other
+            var criticalPath: [CriticalPathNode] = []
+            var currentEndTime: String? = nil
+
+            for target in allTargets {
+                if currentEndTime == nil || target.endedAt <= currentEndTime! {
+                    criticalPath.append(CriticalPathNode(
+                        targetName: target.name,
+                        projectName: target.projectName,
+                        durationSeconds: target.duration
+                    ))
+                    currentEndTime = target.startedAt
+                }
+            }
+
+            return criticalPath.reversed()
+        }
+    }
+
+    func searchErrors(pattern: String) -> [ErrorSearchResult] {
+        queue.sync {
+            let sql = """
+                SELECT b.id, b.started_at, d.message, d.file_path, d.line
+                FROM build_diagnostics d
+                JOIN builds b ON d.build_id = b.id
+                WHERE d.kind = 'error' AND d.message LIKE ?
+                ORDER BY b.started_at DESC
+                LIMIT 20
+                """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            let likePattern = "%\(pattern)%"
+            sqlite3_bind_text(statement, 1, likePattern, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var results: [ErrorSearchResult] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append(ErrorSearchResult(
+                    buildId: String(cString: sqlite3_column_text(statement, 0)),
+                    buildStartedAt: String(cString: sqlite3_column_text(statement, 1)),
+                    message: String(cString: sqlite3_column_text(statement, 2)),
+                    filePath: sqlite3_column_type(statement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 3)) : nil,
+                    line: sqlite3_column_type(statement, 4) != SQLITE_NULL ? Int(sqlite3_column_int(statement, 4)) : nil
+                ))
+            }
+            return results
+        }
+    }
+
+    private func queryLatestBuildId() -> String? {
+        let sql = "SELECT id FROM builds ORDER BY started_at DESC LIMIT 1"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return String(cString: sqlite3_column_text(statement, 0))
+    }
+
     // MARK: - SQL execution helpers
 
     private func execute(_ sql: String) throws {
@@ -402,4 +656,64 @@ private extension Date {
     var iso8601String: String {
         ISO8601DateFormatter().string(from: self)
     }
+}
+
+// MARK: - Query result types
+
+struct BuildSummary: Codable {
+    let id: String
+    let startedAt: String
+    let endedAt: String?
+    let status: String?
+    let durationSeconds: Double?
+    let targetCount: Int
+    let taskCount: Int
+    let errorCount: Int
+    let warningCount: Int
+    let cacheHitCount: Int
+    let cacheMissCount: Int
+}
+
+struct DiagnosticInfo: Codable {
+    let message: String
+    let filePath: String?
+    let line: Int?
+    let column: Int?
+}
+
+struct TargetTiming: Codable {
+    let name: String
+    let projectName: String?
+    let durationSeconds: Double
+    let taskCount: Int
+    let status: String?
+}
+
+struct TaskTiming: Codable {
+    let taskName: String?
+    let executionDescription: String?
+    let interestingPath: String?
+    let durationSeconds: Double
+    let maxRssBytes: Int64?
+}
+
+struct TargetBottleneck: Codable {
+    let targetName: String
+    let durationSeconds: Double
+    let blockedCount: Int
+    let blockedTargets: [String]
+}
+
+struct CriticalPathNode: Codable {
+    let targetName: String
+    let projectName: String?
+    let durationSeconds: Double
+}
+
+struct ErrorSearchResult: Codable {
+    let buildId: String
+    let buildStartedAt: String
+    let message: String
+    let filePath: String?
+    let line: Int?
 }
