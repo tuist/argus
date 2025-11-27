@@ -104,10 +104,11 @@ jobs:
 
       - name: Build release binary
         run: |
+          # Use Swift 5 language mode to avoid strict concurrency errors in Swift 6
           if [ -n "${{ matrix.build_arch }}" ]; then
-            swift build --product SWBBuildServiceBundle -c release --arch ${{ matrix.build_arch }}
+            swift build --product SWBBuildServiceBundle -c release --arch ${{ matrix.build_arch }} -Xswiftc -swift-version -Xswiftc 5
           else
-            swift build --product SWBBuildServiceBundle -c release
+            swift build --product SWBBuildServiceBundle -c release -Xswiftc -swift-version -Xswiftc 5
           fi
 
       - name: Package binary
