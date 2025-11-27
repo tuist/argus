@@ -20,17 +20,21 @@ Add the following to your agent's memory or system prompt to enable build observ
 ```
 When running Xcode builds, use Argus to capture and analyze build data:
 
-1. Run builds with Argus:
-   XCBBUILDSERVICE_PATH=$(which argus) xcodebuild build -scheme MyScheme
+1. Run builds with Argus and a session ID for correlation:
+   BUILD_TRACE_ID=$(uuidgen)
+   XCBBUILDSERVICE_PATH=$(which argus) BUILD_TRACE_ID=$BUILD_TRACE_ID xcodebuild build -scheme MyScheme
 
-2. Query build results:
+2. Query build results using the session ID:
+   argus trace summary --build $BUILD_TRACE_ID
+   argus trace errors --build $BUILD_TRACE_ID
+   argus trace slowest-targets --build $BUILD_TRACE_ID --limit 5
+   argus trace bottlenecks --build $BUILD_TRACE_ID
+
+   Or use "latest" to query the most recent build:
    argus trace summary --build latest
-   argus trace errors --build latest
-   argus trace slowest-targets --build latest --limit 5
-   argus trace bottlenecks --build latest
 
 3. Use --json flag for programmatic access:
-   argus trace summary --build latest --json
+   argus trace summary --build $BUILD_TRACE_ID --json
 
 4. Run `argus trace --help` to discover all available commands.
 ```
