@@ -78,9 +78,10 @@ jobs:
       - name: Package binary
         run: |
           mkdir -p dist
-          cp -R .build/release/SWBBuildServiceBundle dist/argus
+          cp .build/release/SWBBuildServiceBundle dist/argus
+          cp -R .build/release/SwiftBuild_*.bundle dist/
           cd dist
-          tar -czvf argus-apple-darwin-aarch64.tar.gz argus
+          tar -czvf argus-apple-darwin-aarch64.tar.gz argus SwiftBuild_*.bundle
           shasum -a 256 argus-apple-darwin-aarch64.tar.gz > argus-apple-darwin-aarch64.tar.gz.sha256
 
       - name: Upload artifact
