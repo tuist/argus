@@ -10,8 +10,10 @@ Learn more about the motivation and technical details in our blog post: [Teachin
 Install Argus globally using [mise](https://mise.jdx.dev/):
 
 ```bash
-mise use -g ubi:tuist/argus
+mise use -g github:tuist/argus
 ```
+
+> **Note:** Use the `github:` backend (not `ubi:`) to ensure all required resource bundles are extracted.
 
 ## Usage with AI Agents
 
