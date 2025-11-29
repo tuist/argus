@@ -22,11 +22,12 @@ import SWBUtil
 /// Recording is enabled by default, storing traces at:
 /// `~/Library/Developer/Xcode/BuildTraces/traces.db`
 ///
-/// Override the path by setting the `SWB_BUILD_TRACE_PATH` environment variable.
-/// Disable recording by setting `SWB_BUILD_TRACE_ENABLED=0`.
-///
-/// Optionally set `SWB_BUILD_TRACE_ID` to provide a custom build identifier
-/// for correlating builds with external invocations.
+/// Environment variables:
+/// - `SWB_BUILD_TRACE_PATH`: Override the database path
+/// - `SWB_BUILD_TRACE_ENABLED=0`: Disable recording
+/// - `SWB_BUILD_TRACE_ID`: Custom build identifier for external correlation
+/// - `SWB_BUILD_PROJECT_ID`: Project identifier for grouping related builds
+/// - `SWB_BUILD_WORKSPACE_PATH`: Workspace path for grouping builds by workspace
 public final class BuildTraceRecorder: @unchecked Sendable {
     /// The default path for the build trace database.
     private static let defaultPath: String = {
@@ -53,6 +54,8 @@ public final class BuildTraceRecorder: @unchecked Sendable {
 
     private let database: BuildTraceDatabase
     private let buildTraceId: String
+    private let projectId: String?
+    private let workspacePath: String?
 
     /// Creates a new build trace recorder.
     ///
@@ -63,6 +66,8 @@ public final class BuildTraceRecorder: @unchecked Sendable {
         self.database = try BuildTraceDatabase(path: databasePath)
         self.buildTraceId = ProcessInfo.processInfo.environment["SWB_BUILD_TRACE_ID"]
             ?? UUID().uuidString
+        self.projectId = ProcessInfo.processInfo.environment["SWB_BUILD_PROJECT_ID"]
+        self.workspacePath = ProcessInfo.processInfo.environment["SWB_BUILD_WORKSPACE_PATH"]
     }
 
     /// Records a build operation message.
@@ -79,7 +84,9 @@ public final class BuildTraceRecorder: @unchecked Sendable {
             database.insertBuild(
                 buildId: buildTraceId,
                 internalBuildId: msg.id,
-                startedAt: timestamp
+                startedAt: timestamp,
+                projectId: projectId,
+                workspacePath: workspacePath
             )
 
         case let msg as BuildOperationEnded:

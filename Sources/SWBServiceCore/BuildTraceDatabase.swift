@@ -27,6 +27,9 @@ final class BuildTraceDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "com.apple.swiftbuild.tracedb")
 
+    /// Current schema version for migrations.
+    private static let schemaVersion = 2
+
     /// Creates or opens a build trace database at the given path.
     ///
     /// - Parameter path: Path to the SQLite database file.
@@ -40,6 +43,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
         self.db = db
         try createTables()
+        try runMigrations()
     }
 
     deinit {
@@ -153,6 +157,8 @@ final class BuildTraceDatabase: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_target_dependencies_build_id ON target_dependencies(build_id);
         CREATE INDEX IF NOT EXISTS idx_target_dependencies_target ON target_dependencies(target_guid);
         CREATE INDEX IF NOT EXISTS idx_build_targets_guid ON build_targets(guid);
+        CREATE INDEX IF NOT EXISTS idx_builds_project_id ON builds(project_id);
+        CREATE INDEX IF NOT EXISTS idx_builds_workspace_path ON builds(workspace_path);
 
         -- Top-N layer: Views for common agent queries
         -- Slowest targets per build (pre-sorted)
@@ -188,13 +194,52 @@ final class BuildTraceDatabase: @unchecked Sendable {
         try execute(schema)
     }
 
+    /// Runs database migrations to update schema from older versions.
+    ///
+    /// Migration strategy:
+    /// - Version 1: Original schema (no project_id/workspace_path)
+    /// - Version 2: Added project_id and workspace_path columns to builds table
+    private func runMigrations() throws {
+        // Check current schema version
+        let currentVersion = querySchemaVersion()
+
+        if currentVersion < 2 {
+            // Migration to version 2: Add project_id and workspace_path columns
+            let migration = """
+                ALTER TABLE builds ADD COLUMN project_id TEXT;
+                ALTER TABLE builds ADD COLUMN workspace_path TEXT;
+                """
+            // SQLite doesn't support multiple statements in ALTER TABLE via exec,
+            // so we execute each separately
+            try execute("ALTER TABLE builds ADD COLUMN project_id TEXT")
+            try execute("ALTER TABLE builds ADD COLUMN workspace_path TEXT")
+        }
+
+        // Update schema version
+        try setSchemaVersion(Self.schemaVersion)
+    }
+
+    private func querySchemaVersion() -> Int {
+        var statement: OpaquePointer?
+        let sql = "PRAGMA user_version"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    private func setSchemaVersion(_ version: Int) throws {
+        try execute("PRAGMA user_version = \(version)")
+    }
+
     // MARK: - Insert operations
 
-    func insertBuild(buildId: String, internalBuildId: Int, startedAt: Date) {
+    func insertBuild(buildId: String, internalBuildId: Int, startedAt: Date, projectId: String? = nil, workspacePath: String? = nil) {
         queue.async { [weak self] in
             self?.executeInsert(
-                "INSERT OR REPLACE INTO builds (id, build_id, started_at) VALUES (?, ?, ?)",
-                buildId, internalBuildId, startedAt.iso8601String
+                "INSERT OR REPLACE INTO builds (id, build_id, started_at, project_id, workspace_path) VALUES (?, ?, ?, ?, ?)",
+                buildId, internalBuildId, startedAt.iso8601String, projectId, workspacePath
             )
         }
     }
@@ -663,6 +708,102 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
+    func queryProjects() -> [ProjectInfo] {
+        queue.sync {
+            let sql = """
+                SELECT
+                    COALESCE(project_id, workspace_path, 'unknown') as project_identifier,
+                    project_id,
+                    workspace_path,
+                    COUNT(*) as build_count,
+                    MAX(started_at) as last_build_at,
+                    SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) as success_count,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failure_count
+                FROM builds
+                GROUP BY COALESCE(project_id, workspace_path, id)
+                ORDER BY last_build_at DESC
+                """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            var results: [ProjectInfo] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append(ProjectInfo(
+                    identifier: String(cString: sqlite3_column_text(statement, 0)),
+                    projectId: sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil,
+                    workspacePath: sqlite3_column_type(statement, 2) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 2)) : nil,
+                    buildCount: Int(sqlite3_column_int(statement, 3)),
+                    lastBuildAt: String(cString: sqlite3_column_text(statement, 4)),
+                    successCount: Int(sqlite3_column_int(statement, 5)),
+                    failureCount: Int(sqlite3_column_int(statement, 6))
+                ))
+            }
+            return results
+        }
+    }
+
+    func queryBuildsForProject(projectId: String?, workspacePath: String?, limit: Int) -> [BuildSummary] {
+        queue.sync {
+            var conditions: [String] = []
+            var bindings: [Any?] = []
+
+            if let projectId = projectId {
+                conditions.append("project_id = ?")
+                bindings.append(projectId)
+            }
+            if let workspacePath = workspacePath {
+                conditions.append("workspace_path = ?")
+                bindings.append(workspacePath)
+            }
+
+            let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " OR ")
+            let sql = """
+                SELECT id, started_at, ended_at, status, duration_seconds,
+                       target_count, task_count, error_count, warning_count, cache_hit_count, cache_miss_count
+                FROM builds
+                \(whereClause)
+                ORDER BY started_at DESC
+                LIMIT ?
+                """
+            bindings.append(limit)
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            for (index, binding) in bindings.enumerated() {
+                let position = Int32(index + 1)
+                switch binding {
+                case let value as String:
+                    sqlite3_bind_text(statement, position, value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                case let value as Int:
+                    sqlite3_bind_int(statement, position, Int32(value))
+                default:
+                    sqlite3_bind_null(statement, position)
+                }
+            }
+
+            var results: [BuildSummary] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append(BuildSummary(
+                    id: String(cString: sqlite3_column_text(statement, 0)),
+                    startedAt: String(cString: sqlite3_column_text(statement, 1)),
+                    endedAt: sqlite3_column_type(statement, 2) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 2)) : nil,
+                    status: sqlite3_column_type(statement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 3)) : nil,
+                    durationSeconds: sqlite3_column_type(statement, 4) != SQLITE_NULL ? sqlite3_column_double(statement, 4) : nil,
+                    targetCount: Int(sqlite3_column_int(statement, 5)),
+                    taskCount: Int(sqlite3_column_int(statement, 6)),
+                    errorCount: Int(sqlite3_column_int(statement, 7)),
+                    warningCount: Int(sqlite3_column_int(statement, 8)),
+                    cacheHitCount: Int(sqlite3_column_int(statement, 9)),
+                    cacheMissCount: Int(sqlite3_column_int(statement, 10))
+                ))
+            }
+            return results
+        }
+    }
+
     private func queryLatestBuildId() -> String? {
         let sql = "SELECT id FROM builds ORDER BY started_at DESC LIMIT 1"
         var statement: OpaquePointer?
@@ -803,4 +944,14 @@ struct ErrorSearchResult: Codable {
     let message: String
     let filePath: String?
     let line: Int?
+}
+
+struct ProjectInfo: Codable {
+    let identifier: String
+    let projectId: String?
+    let workspacePath: String?
+    let buildCount: Int
+    let lastBuildAt: String
+    let successCount: Int
+    let failureCount: Int
 }
