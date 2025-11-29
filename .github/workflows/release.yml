@@ -66,8 +66,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+      - name: Setup Swift
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          development: true
+          cache-snapshot: false
 
       - name: Build release binary
         run: |
