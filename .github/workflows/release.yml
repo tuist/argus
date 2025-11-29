@@ -68,12 +68,12 @@ jobs:
 
       - name: Setup Swift
         env:
-          SWIFT_VERSION: swift-DEVELOPMENT-SNAPSHOT-2025-11-28-a
+          SWIFT_VERSION: swift-DEVELOPMENT-SNAPSHOT-2025-11-26-a
         run: |
           # Download and install Swift development snapshot manually to avoid cache issues
           TOOLCHAIN_URL="https://download.swift.org/development/xcode/${SWIFT_VERSION}/${SWIFT_VERSION}-osx.pkg"
           echo "Downloading Swift toolchain from ${TOOLCHAIN_URL}"
-          curl -L -o swift.pkg "${TOOLCHAIN_URL}"
+          curl -fL -o swift.pkg "${TOOLCHAIN_URL}"
           sudo installer -pkg swift.pkg -target /
           # Verify installation
           /Library/Developer/Toolchains/${SWIFT_VERSION}.xctoolchain/usr/bin/swift --version
