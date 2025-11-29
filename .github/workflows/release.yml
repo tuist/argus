@@ -67,10 +67,18 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Swift
-        uses: SwiftyLab/setup-swift@latest
-        with:
-          development: true
-          cache-snapshot: false
+        env:
+          SWIFT_VERSION: swift-DEVELOPMENT-SNAPSHOT-2025-11-28-a
+        run: |
+          # Download and install Swift development snapshot manually to avoid cache issues
+          TOOLCHAIN_URL="https://download.swift.org/development/xcode/${SWIFT_VERSION}/${SWIFT_VERSION}-osx.pkg"
+          echo "Downloading Swift toolchain from ${TOOLCHAIN_URL}"
+          curl -L -o swift.pkg "${TOOLCHAIN_URL}"
+          sudo installer -pkg swift.pkg -target /
+          # Verify installation
+          /Library/Developer/Toolchains/${SWIFT_VERSION}.xctoolchain/usr/bin/swift --version
+          # Set toolchain for subsequent steps
+          echo "TOOLCHAINS=${SWIFT_VERSION}" >> $GITHUB_ENV
 
       - name: Build release binary
         run: |
