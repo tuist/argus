@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Foundation
 package import SWBUtil
 package import SWBCore
 
@@ -112,6 +113,7 @@ package final class BuildPlan: StaleFileRemovalContext {
         for context in productPlanResultContexts {
             context.productPlan.taskProducerContext.phase = .planning
         }
+        let preparePhaseStart = Date()
         await withTaskGroup(of: Void.self) { group in
             let (progressStream, progressContinuation) = AsyncStream<Void>.makeStream()
 
@@ -140,6 +142,11 @@ package final class BuildPlan: StaleFileRemovalContext {
             // Wait for the pre-planning to be done so that we can move on to constructing the real tasks.
             await group.waitForAll()
         }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Task producer prepare phase",
+            duration: Date().timeIntervalSince(preparePhaseStart),
+            details: ["producerCount": "\(producersToEvaluate.count)"]
+        )
 
         if delegate.cancelled {
             return nil
@@ -149,6 +156,7 @@ package final class BuildPlan: StaleFileRemovalContext {
         for context in productPlanResultContexts {
             context.productPlan.taskProducerContext.phase = .taskGeneration
         }
+        let generatePhaseStart = Date()
         await withTaskGroup(of: Void.self) { group in
             let (progressStream, progressContinuation) = AsyncStream<Void>.makeStream()
 
@@ -187,6 +195,12 @@ package final class BuildPlan: StaleFileRemovalContext {
         }
 
         await aggregationQueue.sync{ }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Task producer generate phase",
+            duration: Date().timeIntervalSince(generatePhaseStart),
+            details: ["producerCount": "\(producersToEvaluate.count)"]
+        )
+
         if delegate.cancelled {
             // Reset any deferred producers, which may participate in cycles.
             for context in productPlanResultContexts {
@@ -200,6 +214,7 @@ package final class BuildPlan: StaleFileRemovalContext {
 
         // Compute all of the deferred tasks (in parallel).
         delegate.updateProgress(statusMessage: messageShortening == .full ? "Planning deferred tasks" : "Constructing deferred tasks", showInLog: false)
+        let deferredPhaseStart = Date()
         await TaskGroup.concurrentPerform(iterations: productPlanResultContexts.count, maximumParallelism: 10) { i in
             let productPlanResultContext = productPlanResultContexts[i]
             let plan = productPlanResultContext.productPlan
@@ -217,6 +232,12 @@ package final class BuildPlan: StaleFileRemovalContext {
 
         // Wait for product plan aggregation.
         await aggregationQueue.sync {}
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Deferred task computation phase",
+            duration: Date().timeIntervalSince(deferredPhaseStart),
+            details: ["planCount": "\(productPlanResultContexts.count)"]
+        )
+
         if delegate.cancelled {
             return nil
         }
@@ -224,6 +245,7 @@ package final class BuildPlan: StaleFileRemovalContext {
         // Now we have a list of product plan result contexts, each of which contains a list of all planned tasks for each plan, as well as the information needed to validate them.
         // Since these contexts are independent of each other, we can in parallel have each one validate its tasks, and then serially add the tasks it ends up with to a final task array.
         delegate.updateProgress(statusMessage: "Finalizing plan", showInLog: false)
+        let aggregationStart = Date()
         let tasks = await withTaskGroup(of: [any PlannedTask].self) { group in
             for resultContext in productPlanResultContexts {
                 group.addTask {
@@ -240,6 +262,12 @@ package final class BuildPlan: StaleFileRemovalContext {
 
         // Wait for task validation.
         await aggregationQueue.sync{ }
+        BuildDescriptionPerformanceLogger.shared.log(
+            "Task aggregation and finalization",
+            duration: Date().timeIntervalSince(aggregationStart),
+            details: ["totalTasks": "\(tasks.count)", "planCount": "\(productPlanResultContexts.count)"]
+        )
+
         if delegate.cancelled {
             return nil
         }

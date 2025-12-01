@@ -217,19 +217,101 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
         }
 
         // Perform post-processing analysis of the build graph
+        var computeStart = Date()
         self.clientsOfBundlesByTarget = Self.computeBundleClients(buildGraph: planRequest.buildGraph, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeBundleClients",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["bundleCount": "\(clientsOfBundlesByTarget.count)"]
+        )
+
+        computeStart = Date()
         self.artifactBundlesByTarget = await Self.computeArtifactBundleInfo(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequest: planRequest.buildRequest, buildRequestContext: planRequest.buildRequestContext, workspaceContext: planRequest.workspaceContext, getLinkageGraph: getLinkageGraph, metadataCache: self.artifactBundleMetadataCache, delegate: delegate)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeArtifactBundleInfo",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(artifactBundlesByTarget.count)"]
+        )
+
+        computeStart = Date()
         let directlyLinkedDependenciesByTarget: [ConfiguredTarget: OrderedSet<LinkedDependency>]
         (self.impartedBuildPropertiesByTarget, directlyLinkedDependenciesByTarget) = await Self.computeImpartedBuildProperties(planRequest: planRequest, getLinkageGraph: getLinkageGraph, delegate: delegate)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeImpartedBuildProperties",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(impartedBuildPropertiesByTarget.count)"]
+        )
+        computeStart = Date()
         self.mergeableTargetsToMergingTargets = Self.computeMergeableLibraries(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeMergeableLibraries",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(mergeableTargetsToMergingTargets.count)"]
+        )
+
+        computeStart = Date()
         self.productPathsToProducingTargets = Self.computeProducingTargetsForProducts(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeProducingTargetsForProducts",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["productCount": "\(productPathsToProducingTargets.count)"]
+        )
+
+        computeStart = Date()
         self.targetGateNodes = Self.constructTargetGateNodes(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext, impartedBuildPropertiesByTarget: impartedBuildPropertiesByTarget, enableIndexBuildArena: planRequest.buildRequest.enableIndexBuildArena, nodeCreationDelegate: nodeCreationDelegate)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "constructTargetGateNodes",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["nodeCount": "\(targetGateNodes.count)"]
+        )
+
+        computeStart = Date()
         (self.hostedTargetsForTargets, self.hostTargetForTargets) = Self.computeHostingRelationships(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext, delegate: delegate)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeHostingRelationships",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["hostedCount": "\(hostedTargetsForTargets.count)", "hostCount": "\(hostTargetForTargets.count)"]
+        )
+
+        computeStart = Date()
         self.duplicatedProductNames = Self.computeDuplicateProductNames(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeDuplicateProductNames",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["duplicateCount": "\(duplicatedProductNames.count)"]
+        )
+
+        computeStart = Date()
         self.targetToProducingTargetForNearestEnclosingProduct = Self.computeTargetsProducingEnclosingProducts(buildGraph: planRequest.buildGraph, productPathsToProducingTargets: productPathsToProducingTargets, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeTargetsProducingEnclosingProducts",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(targetToProducingTargetForNearestEnclosingProduct.count)"]
+        )
+
+        computeStart = Date()
         self.swiftMacroImplementationDescriptorsByTarget = Self.computeSwiftMacroImplementationDescriptors(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext, delegate: delegate)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeSwiftMacroImplementationDescriptors",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(swiftMacroImplementationDescriptorsByTarget.count)"]
+        )
+
+        computeStart = Date()
         self.targetsRequiredToBuildForIndexing = Self.computeTargetsRequiredToBuildForIndexing(buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeTargetsRequiredToBuildForIndexing",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(targetsRequiredToBuildForIndexing.count)"]
+        )
+
+        computeStart = Date()
         self.targetsWhichShouldBuildModulesDuringInstallAPI = Self.computeTargetsWhichShouldBuildModulesInInstallAPI(buildRequest: planRequest.buildRequest, buildGraph: planRequest.buildGraph, provisioningInputs: planRequest.provisioningInputs, buildRequestContext: planRequest.buildRequestContext)
+        BuildDescriptionPerformanceLogger.shared.log(
+            "computeTargetsWhichShouldBuildModulesInInstallAPI",
+            duration: Date().timeIntervalSince(computeStart),
+            details: ["targetCount": "\(targetsWhichShouldBuildModulesDuringInstallAPI?.count ?? 0)"]
+        )
 
         // Diagnostics reporting
         diagnoseInvalidDeploymentTargets(diagnosticDelegate: delegate)
