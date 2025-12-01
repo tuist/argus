@@ -11,8 +11,10 @@
 //===----------------------------------------------------------------------===//
 
 package import Foundation
-import SWBUtil
+
+#if canImport(os)
 import os
+#endif
 
 /// Performance logger for build description operations
 /// Logs to a fixed path for debugging and LLM-assisted performance analysis
