@@ -10,14 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Build tracing is only available on Apple platforms where SQLite3 is available
+#if canImport(SQLite3)
+
 import Foundation
 import SWBProtocol
-
-#if canImport(SQLite3)
 import SQLite3
-#elseif os(Linux) || os(Windows) || os(Android)
-@_implementationOnly import SwiftToolchainCSQLite
-#endif
 
 /// A SQLite database for storing build trace data.
 ///
@@ -205,10 +203,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
         if currentVersion < 2 {
             // Migration to version 2: Add project_id and workspace_path columns
-            let migration = """
-                ALTER TABLE builds ADD COLUMN project_id TEXT;
-                ALTER TABLE builds ADD COLUMN workspace_path TEXT;
-                """
             // SQLite doesn't support multiple statements in ALTER TABLE via exec,
             // so we execute each separately
             try execute("ALTER TABLE builds ADD COLUMN project_id TEXT")
@@ -530,11 +524,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return [] }
 
-            // Find targets that are bottlenecks using the actual dependency graph.
-            // A bottleneck is a target that:
-            // 1. Takes a long time to compile
-            // 2. Has many other targets depending on it (blocking them from starting)
-            // The bottleneck_score = duration * dependent_count shows the total "cost" of this target
             let sql = """
                 SELECT
                     t.name as target_name,
@@ -577,11 +566,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return [] }
 
-            // Build the dependency graph and compute the critical path.
-            // The critical path is the longest chain of dependencies that determines
-            // the minimum possible build time.
-
-            // First, get all targets with their durations
             var targetDurations: [String: (name: String, projectName: String?, duration: Double, guid: String)] = [:]
             let targetsSql = """
                 SELECT guid, name, project_name, duration_seconds
@@ -602,7 +586,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 targetDurations[guid] = (name, projectName, duration, guid)
             }
 
-            // Get dependencies
             var dependencies: [String: [String]] = [:]
             let depsSql = """
                 SELECT target_guid, depends_on_guid
@@ -621,8 +604,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 dependencies[targetGuid, default: []].append(dependsOnGuid)
             }
 
-            // Compute longest path to each target using dynamic programming
-            var memo: [String: (Double, [String])] = [:] // guid -> (total_duration, path)
+            var memo: [String: (Double, [String])] = [:]
 
             func longestPath(_ guid: String) -> (Double, [String]) {
                 if let cached = memo[guid] { return cached }
@@ -650,7 +632,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 return result
             }
 
-            // Find the target with the longest total path
             var criticalGuid: String? = nil
             var criticalDuration = 0.0
 
@@ -662,7 +643,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 }
             }
 
-            // Build the result
             guard let finalGuid = criticalGuid else { return [] }
             let (_, path) = longestPath(finalGuid)
 
@@ -955,3 +935,5 @@ struct ProjectInfo: Codable {
     let successCount: Int
     let failureCount: Int
 }
+
+#endif // canImport(SQLite3)

@@ -10,6 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Build tracing is only available on Apple platforms where SQLite3 is available
+#if canImport(SQLite3)
+
 import Foundation
 
 /// CLI for querying build trace data.
@@ -474,3 +477,5 @@ private extension String {
         String(repeating: self, count: count)
     }
 }
+
+#endif // canImport(SQLite3)

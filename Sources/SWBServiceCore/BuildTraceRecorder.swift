@@ -10,6 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Build tracing is only available on Apple platforms where SQLite3 is available
+#if canImport(SQLite3)
+
 import Foundation
 public import SWBProtocol
 import SWBUtil
@@ -249,3 +252,5 @@ extension Diagnostic.Location {
         }
     }
 }
+
+#endif // canImport(SQLite3)

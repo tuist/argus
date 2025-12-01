@@ -9,9 +9,6 @@ See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 ]]
 
 add_library(SWBServiceCore
-  BuildTraceCLI.swift
-  BuildTraceDatabase.swift
-  BuildTraceRecorder.swift
   Request.swift
   Service.swift
   ServiceEntryPoint.swift
