@@ -16,7 +16,7 @@ import SWBProtocol
 #if canImport(SQLite3)
 import SQLite3
 #elseif os(Linux) || os(Windows)
-@_implementationOnly import CSQLite
+@_implementationOnly import SwiftToolchainCSQLite
 #endif
 
 /// A SQLite database for storing build trace data.

@@ -187,7 +187,10 @@ let package = Package(
             swiftSettings: swiftSettings(languageMode: .v6)),
         .target(
             name: "SWBServiceCore",
-            dependencies: ["SWBProtocol"],
+            dependencies: [
+                "SWBProtocol",
+                .product(name: "SwiftToolchainCSQLite", package: "swift-toolchain-sqlite", condition: .when(platforms: [.linux, .windows])),
+            ],
             exclude: ["CMakeLists.txt"],
             swiftSettings: swiftSettings(languageMode: .v6)),
         .target(
@@ -479,3 +482,8 @@ if useLocalDependencies {
         package.dependencies += [.package(url: "https://github.com/swiftlang/swift-llbuild.git", branch: "main"),]
     }
 }
+
+// Add sqlite package for non-Apple platforms (needed by SWBServiceCore)
+package.dependencies += [
+    .package(url: "https://github.com/swiftlang/swift-toolchain-sqlite.git", from: "1.0.7"),
+]
