@@ -15,7 +15,7 @@ import SWBProtocol
 
 #if canImport(SQLite3)
 import SQLite3
-#elseif os(Linux) || os(Windows)
+#elseif os(Linux) || os(Windows) || os(Android)
 @_implementationOnly import SwiftToolchainCSQLite
 #endif
 

@@ -189,7 +189,7 @@ let package = Package(
             name: "SWBServiceCore",
             dependencies: [
                 "SWBProtocol",
-                .product(name: "SwiftToolchainCSQLite", package: "swift-toolchain-sqlite", condition: .when(platforms: [.linux, .windows])),
+                .product(name: "SwiftToolchainCSQLite", package: "swift-toolchain-sqlite", condition: .when(platforms: [.linux, .windows, .android])),
             ],
             exclude: ["CMakeLists.txt"],
             swiftSettings: swiftSettings(languageMode: .v6)),
