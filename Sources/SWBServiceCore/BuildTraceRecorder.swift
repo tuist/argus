@@ -47,7 +47,7 @@ public final class BuildTraceRecorder: @unchecked Sendable {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             return try BuildTraceRecorder(databasePath: path)
         } catch {
-            fputs("Warning: Failed to initialize build trace recorder: \(error)\n", stderr)
+            FileHandle.standardError.write(Data("Warning: Failed to initialize build trace recorder: \(error)\n".utf8))
             return nil
         }
     }()
