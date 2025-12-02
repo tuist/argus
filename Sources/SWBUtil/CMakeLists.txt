@@ -11,6 +11,7 @@ See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 add_library(SWBUtil
   Architecture.swift
   ArgumentSplitting.swift
+  BuildDescriptionPerformanceLogger.swift
   Array.swift
   ArtifactInfo.swift
   AsyncCache.swift

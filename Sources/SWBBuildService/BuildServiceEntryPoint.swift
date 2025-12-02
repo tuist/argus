@@ -87,12 +87,14 @@ extension BuildService {
     package static func main() async -> Never {
         let arguments = CommandLine.arguments
 
-        // Handle trace subcommand before starting the service
+        // Handle trace subcommand before starting the service (Apple platforms only)
+        #if canImport(SQLite3)
         if arguments.count >= 2 && arguments[1] == "trace" {
             let traceArgs = Array(arguments.dropFirst(2))
             _ = BuildTraceCLI.run(arguments: traceArgs)
             exit(EXIT_SUCCESS)
         }
+        #endif
 
         do {
             try await Service.main { inputFD, outputFD in

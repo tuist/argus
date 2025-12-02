@@ -490,3 +490,4 @@ if useLocalDependencies {
         package.dependencies += [.package(url: "https://github.com/swiftlang/swift-llbuild.git", branch: "main"),]
     }
 }
+
