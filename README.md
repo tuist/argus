@@ -41,6 +41,37 @@ When running Xcode builds, use Argus to capture and analyze build data:
 4. Run `argus trace --help` to discover all available commands.
 ```
 
+## Project Correlation
+
+To group builds by project or workspace, set additional environment variables:
+
+```bash
+# Group builds by a custom project identifier
+XCBBUILDSERVICE_PATH=$(which argus) \
+  SWB_BUILD_PROJECT_ID=my-app \
+  SWB_BUILD_WORKSPACE_PATH=$(pwd) \
+  xcodebuild build -scheme MyScheme
+
+# List all projects with build history
+argus trace projects
+
+# View builds for a specific project
+argus trace builds --project my-app --limit 10
+
+# View builds for a specific workspace path
+argus trace builds --workspace /path/to/project --limit 10
+```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `SWB_BUILD_TRACE_ID` | Custom build identifier for external correlation |
+| `SWB_BUILD_PROJECT_ID` | Project identifier for grouping related builds |
+| `SWB_BUILD_WORKSPACE_PATH` | Workspace path for grouping builds by workspace |
+| `SWB_BUILD_TRACE_PATH` | Override the default database path |
+| `SWB_BUILD_TRACE_ENABLED` | Set to `0` to disable recording |
+
 ## License
 
 See https://swift.org/LICENSE.txt for license information.

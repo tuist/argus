@@ -10,6 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Build tracing is only available on Apple platforms where SQLite3 is available
+#if canImport(SQLite3)
+
 import Foundation
 
 /// CLI for querying build trace data.
@@ -52,6 +55,10 @@ public enum BuildTraceCLI {
             return handleCriticalPath(arguments: remainingArgs)
         case "search-errors":
             return handleSearchErrors(arguments: remainingArgs)
+        case "projects":
+            return handleProjects(arguments: remainingArgs)
+        case "builds":
+            return handleBuilds(arguments: remainingArgs)
         case "help", "--help", "-h":
             printUsage()
             return true
@@ -75,18 +82,29 @@ public enum BuildTraceCLI {
           bottlenecks         Show parallelization bottlenecks
           critical-path       Show critical path through build
           search-errors       Search for errors matching a pattern
+          projects            List all projects with build history
+          builds              List builds for a project
 
         Options:
           --build <id>        Build ID or "latest" (default: latest)
           --limit <n>         Limit results (default: 10)
           --pattern <text>    Search pattern (for search-errors)
+          --project <id>      Filter by project ID
+          --workspace <path>  Filter by workspace path
           --json              Output as JSON
+
+        Environment Variables (set when running xcodebuild):
+          SWB_BUILD_TRACE_ID         Custom build identifier
+          SWB_BUILD_PROJECT_ID       Project identifier for grouping builds
+          SWB_BUILD_WORKSPACE_PATH   Workspace path for grouping builds
 
         Examples:
           SWBBuildService trace summary --build latest
           SWBBuildService trace errors --build latest
           SWBBuildService trace slowest-targets --limit 5
           SWBBuildService trace search-errors --pattern "linker"
+          SWBBuildService trace projects
+          SWBBuildService trace builds --project my-project --limit 10
         """)
     }
 
@@ -100,10 +118,12 @@ public enum BuildTraceCLI {
         }
     }
 
-    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, json: Bool) {
+    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, json: Bool) {
         var buildId = "latest"
         var limit = 10
         var pattern: String? = nil
+        var projectId: String? = nil
+        var workspacePath: String? = nil
         var json = false
 
         var i = 0
@@ -124,6 +144,16 @@ public enum BuildTraceCLI {
                     pattern = arguments[i + 1]
                     i += 1
                 }
+            case "--project":
+                if i + 1 < arguments.count {
+                    projectId = arguments[i + 1]
+                    i += 1
+                }
+            case "--workspace":
+                if i + 1 < arguments.count {
+                    workspacePath = arguments[i + 1]
+                    i += 1
+                }
             case "--json":
                 json = true
             default:
@@ -132,7 +162,7 @@ public enum BuildTraceCLI {
             i += 1
         }
 
-        return (buildId, limit, pattern, json)
+        return (buildId, limit, pattern, projectId, workspacePath, json)
     }
 
     private static func output<T: Encodable>(_ value: T, json: Bool) {
@@ -360,6 +390,86 @@ public enum BuildTraceCLI {
         }
         return true
     }
+
+    private static func handleProjects(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+        let options = parseOptions(arguments)
+        let projects = db.queryProjects()
+
+        if options.json {
+            output(projects, json: true)
+        } else {
+            if projects.isEmpty {
+                print("No projects found")
+                print("\nTo associate builds with a project, set environment variables when running xcodebuild:")
+                print("  SWB_BUILD_PROJECT_ID=my-project xcodebuild ...")
+                print("  SWB_BUILD_WORKSPACE_PATH=/path/to/workspace xcodebuild ...")
+            } else {
+                print("Projects")
+                print("========")
+                for project in projects {
+                    let successRate = project.buildCount > 0
+                        ? Double(project.successCount) / Double(project.buildCount) * 100
+                        : 0
+                    print("\n\(project.identifier)")
+                    if let projectId = project.projectId {
+                        print("  Project ID: \(projectId)")
+                    }
+                    if let workspace = project.workspacePath {
+                        print("  Workspace: \(workspace)")
+                    }
+                    print("  Builds: \(project.buildCount) (\(String(format: "%.0f", successRate))% success)")
+                    print("  Last build: \(project.lastBuildAt)")
+                }
+            }
+        }
+        return true
+    }
+
+    private static func handleBuilds(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+        let options = parseOptions(arguments)
+
+        if options.projectId == nil && options.workspacePath == nil {
+            print("Error: --project or --workspace is required for builds command")
+            print("Use 'argus trace projects' to list available projects")
+            return true
+        }
+
+        let builds = db.queryBuildsForProject(
+            projectId: options.projectId,
+            workspacePath: options.workspacePath,
+            limit: options.limit
+        )
+
+        if options.json {
+            output(builds, json: true)
+        } else {
+            if builds.isEmpty {
+                print("No builds found for the specified project")
+            } else {
+                let projectName = options.projectId ?? options.workspacePath ?? "Unknown"
+                print("Builds for \(projectName)")
+                print("=".repeated(40))
+                for build in builds {
+                    let status = build.status ?? "in progress"
+                    let duration = build.durationSeconds.map { String(format: "%.2fs", $0) } ?? "-"
+                    print("\n\(build.id)")
+                    print("  Status: \(status)")
+                    print("  Duration: \(duration)")
+                    print("  Started: \(build.startedAt)")
+                    print("  Targets: \(build.targetCount), Tasks: \(build.taskCount)")
+                    if build.errorCount > 0 {
+                        print("  Errors: \(build.errorCount)")
+                    }
+                    if build.warningCount > 0 {
+                        print("  Warnings: \(build.warningCount)")
+                    }
+                }
+            }
+        }
+        return true
+    }
 }
 
 private extension String {
@@ -367,3 +477,5 @@ private extension String {
         String(repeating: self, count: count)
     }
 }
+
+#endif // canImport(SQLite3)
