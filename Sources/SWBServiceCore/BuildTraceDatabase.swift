@@ -26,7 +26,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.apple.swiftbuild.tracedb")
 
     /// Current schema version for migrations.
-    private static let schemaVersion = 2
+    private static let schemaVersion = 3
 
     /// Creates or opens a build trace database at the given path.
     ///
@@ -144,6 +144,18 @@ final class BuildTraceDatabase: @unchecked Sendable {
             FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
+        -- Source imports: Tracks which modules each source file imports.
+        CREATE TABLE IF NOT EXISTS source_imports (
+            id INTEGER PRIMARY KEY,
+            build_id TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            target_name TEXT NOT NULL,
+            target_guid TEXT,
+            source_file TEXT NOT NULL,
+            imported_module TEXT NOT NULL,
+            FOREIGN KEY (build_id) REFERENCES builds(id)
+        );
+
         -- Indexes for common queries
         CREATE INDEX IF NOT EXISTS idx_build_targets_build_id ON build_targets(build_id);
         CREATE INDEX IF NOT EXISTS idx_build_tasks_build_id ON build_tasks(build_id);
@@ -157,6 +169,9 @@ final class BuildTraceDatabase: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_build_targets_guid ON build_targets(guid);
         CREATE INDEX IF NOT EXISTS idx_builds_project_id ON builds(project_id);
         CREATE INDEX IF NOT EXISTS idx_builds_workspace_path ON builds(workspace_path);
+        CREATE INDEX IF NOT EXISTS idx_source_imports_build_id ON source_imports(build_id);
+        CREATE INDEX IF NOT EXISTS idx_source_imports_target ON source_imports(build_id, target_name);
+        CREATE INDEX IF NOT EXISTS idx_source_imports_module ON source_imports(build_id, imported_module);
 
         -- Top-N layer: Views for common agent queries
         -- Slowest targets per build (pre-sorted)
@@ -187,6 +202,12 @@ final class BuildTraceDatabase: @unchecked Sendable {
         FROM build_diagnostics
         WHERE kind = 'warning'
         ORDER BY build_id, timestamp DESC;
+
+        -- Aggregated imports per target
+        CREATE VIEW IF NOT EXISTS target_imports AS
+        SELECT build_id, target_name, target_guid, imported_module, COUNT(*) as import_count
+        FROM source_imports
+        GROUP BY build_id, target_name, target_guid, imported_module;
         """
 
         try execute(schema)
@@ -197,6 +218,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
     /// Migration strategy:
     /// - Version 1: Original schema (no project_id/workspace_path)
     /// - Version 2: Added project_id and workspace_path columns to builds table
+    /// - Version 3: Added source_imports table for import tracking
     private func runMigrations() throws {
         // Check current schema version
         let currentVersion = querySchemaVersion()
@@ -207,6 +229,15 @@ final class BuildTraceDatabase: @unchecked Sendable {
             // so we execute each separately
             try execute("ALTER TABLE builds ADD COLUMN project_id TEXT")
             try execute("ALTER TABLE builds ADD COLUMN workspace_path TEXT")
+        }
+
+        if currentVersion < 3 {
+            // Migration to version 3: Add source_imports table
+            // The table is created in createTables() via CREATE TABLE IF NOT EXISTS,
+            // so we just need to ensure indexes and views exist
+            try execute("CREATE INDEX IF NOT EXISTS idx_source_imports_build_id ON source_imports(build_id)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_source_imports_target ON source_imports(build_id, target_name)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_source_imports_module ON source_imports(build_id, imported_module)")
         }
 
         // Update schema version
@@ -396,6 +427,25 @@ final class BuildTraceDatabase: @unchecked Sendable {
                     )
                 }
             }
+        }
+    }
+
+    func insertSourceImport(
+        buildId: String,
+        targetId: Int,
+        targetName: String,
+        targetGuid: String?,
+        sourceFile: String,
+        importedModule: String
+    ) {
+        queue.async { [weak self] in
+            self?.executeInsert(
+                """
+                INSERT INTO source_imports (build_id, target_id, target_name, target_guid, source_file, imported_module)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                buildId, targetId, targetName, targetGuid, sourceFile, importedModule
+            )
         }
     }
 
@@ -794,6 +844,180 @@ final class BuildTraceDatabase: @unchecked Sendable {
         return String(cString: sqlite3_column_text(statement, 0))
     }
 
+    // MARK: - Import queries
+
+    /// Queries all imports aggregated by target for a build.
+    func queryTargetImports(buildId: String, targetName: String? = nil) -> [TargetImportInfo] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            var sql = """
+                SELECT target_name, target_guid, imported_module, import_count
+                FROM target_imports
+                WHERE build_id = ?
+                """
+            var bindings: [Any] = [resolvedBuildId]
+
+            if let targetName = targetName {
+                sql += " AND target_name = ?"
+                bindings.append(targetName)
+            }
+
+            sql += " ORDER BY target_name, import_count DESC"
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            for (index, binding) in bindings.enumerated() {
+                let position = Int32(index + 1)
+                if let value = binding as? String {
+                    sqlite3_bind_text(statement, position, value, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                }
+            }
+
+            var results: [TargetImportInfo] = []
+            var currentTarget: String? = nil
+            var currentImports: [ImportInfo] = []
+            var currentGuid: String? = nil
+
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let targetName = String(cString: sqlite3_column_text(statement, 0))
+                let targetGuid = sqlite3_column_type(statement, 1) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 1)) : nil
+                let moduleName = String(cString: sqlite3_column_text(statement, 2))
+                let importCount = Int(sqlite3_column_int(statement, 3))
+
+                if currentTarget != targetName {
+                    // Save previous target if exists
+                    if let target = currentTarget {
+                        results.append(TargetImportInfo(
+                            targetName: target,
+                            targetGuid: currentGuid,
+                            imports: currentImports
+                        ))
+                    }
+                    currentTarget = targetName
+                    currentGuid = targetGuid
+                    currentImports = []
+                }
+
+                currentImports.append(ImportInfo(
+                    moduleName: moduleName,
+                    fileCount: importCount
+                ))
+            }
+
+            // Don't forget the last target
+            if let target = currentTarget {
+                results.append(TargetImportInfo(
+                    targetName: target,
+                    targetGuid: currentGuid,
+                    imports: currentImports
+                ))
+            }
+
+            return results
+        }
+    }
+
+    /// Queries implicit dependencies: modules that are imported but not declared as dependencies.
+    func queryImplicitDependencies(buildId: String) -> [ImplicitDependency] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            // Find all targets that import modules matching other target names in the build,
+            // but where there's no corresponding entry in target_dependencies
+            let sql = """
+                SELECT DISTINCT
+                    si.target_name,
+                    si.target_guid,
+                    si.imported_module,
+                    GROUP_CONCAT(DISTINCT si.source_file) as importing_files
+                FROM source_imports si
+                INNER JOIN build_targets bt ON si.build_id = bt.build_id AND si.imported_module = bt.name
+                LEFT JOIN target_dependencies td ON
+                    si.build_id = td.build_id AND
+                    si.target_guid = td.target_guid AND
+                    bt.guid = td.depends_on_guid
+                WHERE si.build_id = ?
+                    AND td.id IS NULL
+                    AND si.target_name != si.imported_module
+                GROUP BY si.target_name, si.target_guid, si.imported_module
+                ORDER BY si.target_name, si.imported_module
+                """
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var results: [ImplicitDependency] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let targetName = String(cString: sqlite3_column_text(statement, 0))
+                let importedModule = String(cString: sqlite3_column_text(statement, 2))
+                let filesStr = sqlite3_column_type(statement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(statement, 3)) : ""
+                let files = filesStr.split(separator: ",").map(String.init)
+
+                results.append(ImplicitDependency(
+                    targetName: targetName,
+                    importedModule: importedModule,
+                    importingFiles: files,
+                    suggestion: "Add dependency: \(targetName) -> \(importedModule)"
+                ))
+            }
+
+            return results
+        }
+    }
+
+    /// Queries redundant dependencies: declared dependencies that are never imported.
+    func queryRedundantDependencies(buildId: String) -> [RedundantDependency] {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return [] }
+
+            // Find dependencies in target_dependencies that have no matching imports
+            let sql = """
+                SELECT DISTINCT
+                    bt1.name as target_name,
+                    bt2.name as dependency_name
+                FROM target_dependencies td
+                INNER JOIN build_targets bt1 ON td.build_id = bt1.build_id AND td.target_guid = bt1.guid
+                INNER JOIN build_targets bt2 ON td.build_id = bt2.build_id AND td.depends_on_guid = bt2.guid
+                LEFT JOIN source_imports si ON
+                    td.build_id = si.build_id AND
+                    bt1.name = si.target_name AND
+                    bt2.name = si.imported_module
+                WHERE td.build_id = ?
+                    AND si.id IS NULL
+                ORDER BY bt1.name, bt2.name
+                """
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var results: [RedundantDependency] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let targetName = String(cString: sqlite3_column_text(statement, 0))
+                let dependencyName = String(cString: sqlite3_column_text(statement, 1))
+
+                results.append(RedundantDependency(
+                    targetName: targetName,
+                    declaredDependency: dependencyName,
+                    suggestion: "Consider removing: \(targetName) -> \(dependencyName)"
+                ))
+            }
+
+            return results
+        }
+    }
+
     // MARK: - SQL execution helpers
 
     private func execute(_ sql: String) throws {
@@ -934,6 +1158,32 @@ struct ProjectInfo: Codable {
     let lastBuildAt: String
     let successCount: Int
     let failureCount: Int
+}
+
+// MARK: - Import analysis result types
+
+struct TargetImportInfo: Codable {
+    let targetName: String
+    let targetGuid: String?
+    let imports: [ImportInfo]
+}
+
+struct ImportInfo: Codable {
+    let moduleName: String
+    let fileCount: Int
+}
+
+struct ImplicitDependency: Codable {
+    let targetName: String
+    let importedModule: String
+    let importingFiles: [String]
+    let suggestion: String
+}
+
+struct RedundantDependency: Codable {
+    let targetName: String
+    let declaredDependency: String
+    let suggestion: String
 }
 
 #endif // canImport(SQLite3)

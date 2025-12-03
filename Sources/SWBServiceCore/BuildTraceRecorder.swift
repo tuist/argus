@@ -60,6 +60,16 @@ public final class BuildTraceRecorder: @unchecked Sendable {
     private let projectId: String?
     private let workspacePath: String?
 
+    /// Cache of target info: targetID -> (name, guid)
+    private var targetInfo: [Int: (name: String, guid: String)] = [:]
+    private let targetInfoLock = NSLock()
+
+    /// Import scanner for extracting imports from source files
+    private let importScanner = ImportSourceCodeScanner()
+
+    /// Whether import scanning is enabled (can be disabled via environment variable)
+    private let importScanningEnabled: Bool
+
     /// Creates a new build trace recorder.
     ///
     /// - Parameters:
@@ -71,6 +81,8 @@ public final class BuildTraceRecorder: @unchecked Sendable {
             ?? UUID().uuidString
         self.projectId = ProcessInfo.processInfo.environment["SWB_BUILD_PROJECT_ID"]
         self.workspacePath = ProcessInfo.processInfo.environment["SWB_BUILD_WORKSPACE_PATH"]
+        // Import scanning can be disabled via environment variable for performance
+        self.importScanningEnabled = ProcessInfo.processInfo.environment["SWB_BUILD_TRACE_IMPORTS"] != "0"
     }
 
     /// Records a build operation message.
@@ -110,6 +122,10 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                 configurationName: msg.info.configurationName,
                 startedAt: timestamp
             )
+            // Cache target info for import scanning
+            targetInfoLock.lock()
+            targetInfo[msg.id] = (name: msg.info.name, guid: msg.guid)
+            targetInfoLock.unlock()
 
         case let msg as BuildOperationTargetEnded:
             database.updateTargetEnded(
@@ -131,6 +147,11 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                 interestingPath: msg.info.interestingPath?.str,
                 startedAt: timestamp
             )
+
+            // Extract imports from compile tasks
+            if importScanningEnabled {
+                recordImportsIfCompileTask(msg: msg)
+            }
 
         case let msg as BuildOperationTaskEnded:
             database.updateTaskEnded(
@@ -176,6 +197,58 @@ public final class BuildTraceRecorder: @unchecked Sendable {
 
         default:
             break
+        }
+    }
+
+    // MARK: - Import scanning
+
+    /// Checks if a task is a compile task and extracts imports if so.
+    private func recordImportsIfCompileTask(msg: BuildOperationTaskStarted) {
+        // Check if this is a compile task
+        let ruleInfo = msg.info.ruleInfo
+        guard ruleInfo.hasPrefix("CompileSwift") ||
+              ruleInfo.hasPrefix("CompileC") ||
+              ruleInfo.hasPrefix("CompileSwiftSources") ||
+              ruleInfo.hasPrefix("Compile") else {
+            return
+        }
+
+        // Get the source file path
+        guard let sourcePath = msg.info.interestingPath?.str else {
+            return
+        }
+
+        // Get target info
+        guard let targetId = msg.targetID else {
+            return
+        }
+
+        targetInfoLock.lock()
+        let cachedTargetInfo = targetInfo[targetId]
+        targetInfoLock.unlock()
+
+        guard let (targetName, targetGuid) = cachedTargetInfo else {
+            return
+        }
+
+        // Extract imports asynchronously to avoid blocking
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+
+            guard let imports = self.importScanner.extractImports(fromFileAt: sourcePath) else {
+                return
+            }
+
+            for importedModule in imports {
+                self.database.insertSourceImport(
+                    buildId: self.buildTraceId,
+                    targetId: targetId,
+                    targetName: targetName,
+                    targetGuid: targetGuid,
+                    sourceFile: sourcePath,
+                    importedModule: importedModule
+                )
+            }
         }
     }
 }
