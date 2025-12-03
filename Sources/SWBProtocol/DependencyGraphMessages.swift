@@ -66,8 +66,14 @@ public struct DependencyGraphResponse: Message, SerializableCodable, Equatable {
 
     public let adjacencyList: [TargetGUID: [TargetGUID]]
 
-    public init(adjacencyList: [TargetGUID: [TargetGUID]]) {
+    /// Maps target GUIDs to their names for resolving dependencies by name.
+    /// This is needed because PackageProductTargets have different GUIDs than
+    /// the actual targets that build, but share the same name.
+    public let targetNames: [TargetGUID: String]
+
+    public init(adjacencyList: [TargetGUID: [TargetGUID]], targetNames: [TargetGUID: String] = [:]) {
         self.adjacencyList = adjacencyList
+        self.targetNames = targetNames
     }
 }
 

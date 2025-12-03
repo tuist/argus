@@ -35,10 +35,14 @@ When running Xcode builds, use Argus to capture and analyze build data:
    Or use "latest" to query the most recent build:
    argus trace summary --build latest
 
-3. Use --json flag for programmatic access:
+3. Analyze dependency health:
+   argus trace implicit-deps --build latest    # Find missing dependencies
+   argus trace redundant-deps --build latest   # Find unused dependencies
+
+4. Use --json flag for programmatic access:
    argus trace summary --build $BUILD_TRACE_ID --json
 
-4. Run `argus trace --help` to discover all available commands.
+5. Run `argus trace --help` to discover all available commands.
 ```
 
 ## Project Correlation
@@ -71,6 +75,42 @@ argus trace builds --workspace /path/to/project --limit 10
 | `SWB_BUILD_WORKSPACE_PATH` | Workspace path for grouping builds by workspace |
 | `SWB_BUILD_TRACE_PATH` | Override the default database path |
 | `SWB_BUILD_TRACE_ENABLED` | Set to `0` to disable recording |
+
+## Implicit Dependency Detection
+
+Argus can analyze your builds to detect implicit dependencies (modules imported but not declared as dependencies) and redundant dependencies (declared but never imported):
+
+```bash
+# Find implicit dependencies - modules imported without being declared
+argus trace implicit-deps --build latest
+
+# Find redundant dependencies - declared but never imported
+argus trace redundant-deps --build latest
+
+# Use JSON output for programmatic access
+argus trace implicit-deps --build latest --json
+```
+
+### Example Output
+
+```
+Implicit Dependencies Found (3)
+
+These modules are imported but not declared as dependencies:
+
+| Target      | Imports     | Files Affected |
+|-------------|-------------|----------------|
+| MyApp       | Analytics   | 5 files        |
+| MyApp       | Networking  | 12 files       |
+| MyFeature   | Utilities   | 3 files        |
+```
+
+This helps you:
+- **Catch missing dependencies** that might cause build failures in clean builds
+- **Remove unused dependencies** to reduce build times
+- **Audit your dependency graph** for architectural issues
+
+> **Note:** The detection works with both Xcode project dependencies and Swift Package dependencies declared in `Package.swift` manifests.
 
 ## License
 
