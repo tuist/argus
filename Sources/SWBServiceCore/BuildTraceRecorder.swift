@@ -190,9 +190,15 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                     (key.rawValue, value.map { $0.rawValue })
                 }
             )
+            let stringTargetNames = Dictionary(
+                uniqueKeysWithValues: msg.targetNames.map { (key, value) in
+                    (key.rawValue, value)
+                }
+            )
             database.insertDependencyGraph(
                 buildId: buildTraceId,
-                adjacencyList: stringAdjacencyList
+                adjacencyList: stringAdjacencyList,
+                targetNames: stringTargetNames
             )
 
         default:
