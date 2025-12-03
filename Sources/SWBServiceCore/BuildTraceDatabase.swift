@@ -26,7 +26,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.apple.swiftbuild.tracedb")
 
     /// Current schema version for migrations.
-    private static let schemaVersion = 3
+    private static let schemaVersion = 4
 
     /// Creates or opens a build trace database at the given path.
     ///
@@ -143,6 +143,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
             build_id TEXT NOT NULL,
             target_guid TEXT NOT NULL,
             depends_on_guid TEXT NOT NULL,
+            depends_on_name TEXT,
             FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
@@ -241,6 +242,14 @@ final class BuildTraceDatabase: @unchecked Sendable {
             try execute("CREATE INDEX IF NOT EXISTS idx_source_imports_build_id ON source_imports(build_id)")
             try execute("CREATE INDEX IF NOT EXISTS idx_source_imports_target ON source_imports(build_id, target_name)")
             try execute("CREATE INDEX IF NOT EXISTS idx_source_imports_module ON source_imports(build_id, imported_module)")
+        }
+
+        if currentVersion < 4 {
+            // Migration to version 4: Add depends_on_name column to target_dependencies
+            // This allows matching dependencies by name instead of GUID, which is needed
+            // because PackageProductTargets have different GUIDs than the actual targets
+            // that build, but share the same name.
+            try? execute("ALTER TABLE target_dependencies ADD COLUMN depends_on_name TEXT")
         }
 
         // Update schema version
@@ -417,16 +426,17 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
-    func insertDependencyGraph(buildId: String, adjacencyList: [String: [String]]) {
+    func insertDependencyGraph(buildId: String, adjacencyList: [String: [String]], targetNames: [String: String] = [:]) {
         queue.async { [weak self] in
             for (targetGuid, dependencies) in adjacencyList {
                 for dependsOnGuid in dependencies {
+                    let dependsOnName = targetNames[dependsOnGuid]
                     self?.executeInsert(
                         """
-                        INSERT INTO target_dependencies (build_id, target_guid, depends_on_guid)
-                        VALUES (?, ?, ?)
+                        INSERT INTO target_dependencies (build_id, target_guid, depends_on_guid, depends_on_name)
+                        VALUES (?, ?, ?, ?)
                         """,
-                        buildId, targetGuid, dependsOnGuid
+                        buildId, targetGuid, dependsOnGuid, dependsOnName
                     )
                 }
             }
@@ -931,7 +941,12 @@ final class BuildTraceDatabase: @unchecked Sendable {
             guard let resolvedBuildId else { return [] }
 
             // Find all targets that import modules matching other target names in the build,
-            // but where there's no corresponding entry in target_dependencies
+            // but where there's no corresponding entry in target_dependencies.
+            //
+            // We match dependencies by NAME instead of GUID because PackageProductTargets
+            // have different GUIDs than the actual library targets that build, but they
+            // share the same name. This ensures that dependencies declared in Package.swift
+            // manifests are properly recognized.
             let sql = """
                 SELECT DISTINCT
                     si.target_name,
@@ -943,7 +958,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 LEFT JOIN target_dependencies td ON
                     si.build_id = td.build_id AND
                     si.target_guid = td.target_guid AND
-                    bt.guid = td.depends_on_guid
+                    td.depends_on_name = si.imported_module
                 WHERE si.build_id = ?
                     AND td.id IS NULL
                     AND si.target_name != si.imported_module

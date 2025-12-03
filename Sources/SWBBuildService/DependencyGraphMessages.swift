@@ -96,10 +96,13 @@ struct ComputeDependencyGraphMsg: MessageHandler {
         }
         let buildGraph = try await constructTargetBuildGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
         var adjacencyList: [TargetGUID: [TargetGUID]] = [:]
+        var targetNames: [TargetGUID: String] = [:]
         for configuredTarget in buildGraph.allTargets {
-            adjacencyList[TargetGUID(rawValue: configuredTarget.target.guid), default: []].append(contentsOf: buildGraph.dependencies(of: configuredTarget).map { TargetGUID(rawValue: $0.target.guid) })
+            let targetGUID = TargetGUID(rawValue: configuredTarget.target.guid)
+            targetNames[targetGUID] = configuredTarget.target.name
+            adjacencyList[targetGUID, default: []].append(contentsOf: buildGraph.dependencies(of: configuredTarget).map { TargetGUID(rawValue: $0.target.guid) })
         }
-        return DependencyGraphResponse(adjacencyList: adjacencyList)
+        return DependencyGraphResponse(adjacencyList: adjacencyList, targetNames: targetNames)
     }
 }
 
