@@ -68,7 +68,9 @@ final class BuildTraceDatabase: @unchecked Sendable {
             error_count INTEGER DEFAULT 0,
             warning_count INTEGER DEFAULT 0,
             cache_hit_count INTEGER DEFAULT 0,
-            cache_miss_count INTEGER DEFAULT 0
+            cache_miss_count INTEGER DEFAULT 0,
+            project_id TEXT,
+            workspace_path TEXT
         );
 
         -- Details layer: Individual targets with timing data.
@@ -226,9 +228,10 @@ final class BuildTraceDatabase: @unchecked Sendable {
         if currentVersion < 2 {
             // Migration to version 2: Add project_id and workspace_path columns
             // SQLite doesn't support multiple statements in ALTER TABLE via exec,
-            // so we execute each separately
-            try execute("ALTER TABLE builds ADD COLUMN project_id TEXT")
-            try execute("ALTER TABLE builds ADD COLUMN workspace_path TEXT")
+            // so we execute each separately.
+            // Use try? to ignore errors if columns already exist (e.g., from updated schema)
+            try? execute("ALTER TABLE builds ADD COLUMN project_id TEXT")
+            try? execute("ALTER TABLE builds ADD COLUMN workspace_path TEXT")
         }
 
         if currentVersion < 3 {

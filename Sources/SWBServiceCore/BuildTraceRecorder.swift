@@ -206,7 +206,8 @@ public final class BuildTraceRecorder: @unchecked Sendable {
     private func recordImportsIfCompileTask(msg: BuildOperationTaskStarted) {
         // Check if this is a compile task
         let ruleInfo = msg.info.ruleInfo
-        guard ruleInfo.hasPrefix("CompileSwift") ||
+        guard ruleInfo.hasPrefix("SwiftCompile") ||
+              ruleInfo.hasPrefix("CompileSwift") ||
               ruleInfo.hasPrefix("CompileC") ||
               ruleInfo.hasPrefix("CompileSwiftSources") ||
               ruleInfo.hasPrefix("Compile") else {
