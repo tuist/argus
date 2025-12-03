@@ -59,6 +59,12 @@ public enum BuildTraceCLI {
             return handleProjects(arguments: remainingArgs)
         case "builds":
             return handleBuilds(arguments: remainingArgs)
+        case "imports":
+            return handleImports(arguments: remainingArgs)
+        case "implicit-deps":
+            return handleImplicitDeps(arguments: remainingArgs)
+        case "redundant-deps":
+            return handleRedundantDeps(arguments: remainingArgs)
         case "help", "--help", "-h":
             printUsage()
             return true
@@ -84,6 +90,9 @@ public enum BuildTraceCLI {
           search-errors       Search for errors matching a pattern
           projects            List all projects with build history
           builds              List builds for a project
+          imports             Show imports per target (requires import scanning)
+          implicit-deps       Show implicit dependencies (imported but not declared)
+          redundant-deps      Show redundant dependencies (declared but not imported)
 
         Options:
           --build <id>        Build ID or "latest" (default: latest)
@@ -91,12 +100,14 @@ public enum BuildTraceCLI {
           --pattern <text>    Search pattern (for search-errors)
           --project <id>      Filter by project ID
           --workspace <path>  Filter by workspace path
+          --target <name>     Filter by target name (for imports command)
           --json              Output as JSON
 
         Environment Variables (set when running xcodebuild):
           SWB_BUILD_TRACE_ID         Custom build identifier
           SWB_BUILD_PROJECT_ID       Project identifier for grouping builds
           SWB_BUILD_WORKSPACE_PATH   Workspace path for grouping builds
+          SWB_BUILD_TRACE_IMPORTS=0  Disable import scanning (for performance)
 
         Examples:
           SWBBuildService trace summary --build latest
@@ -105,6 +116,9 @@ public enum BuildTraceCLI {
           SWBBuildService trace search-errors --pattern "linker"
           SWBBuildService trace projects
           SWBBuildService trace builds --project my-project --limit 10
+          SWBBuildService trace imports --build latest
+          SWBBuildService trace implicit-deps --build latest
+          SWBBuildService trace redundant-deps --build latest
         """)
     }
 
@@ -118,12 +132,13 @@ public enum BuildTraceCLI {
         }
     }
 
-    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, json: Bool) {
+    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, targetName: String?, json: Bool) {
         var buildId = "latest"
         var limit = 10
         var pattern: String? = nil
         var projectId: String? = nil
         var workspacePath: String? = nil
+        var targetName: String? = nil
         var json = false
 
         var i = 0
@@ -154,6 +169,11 @@ public enum BuildTraceCLI {
                     workspacePath = arguments[i + 1]
                     i += 1
                 }
+            case "--target":
+                if i + 1 < arguments.count {
+                    targetName = arguments[i + 1]
+                    i += 1
+                }
             case "--json":
                 json = true
             default:
@@ -162,7 +182,7 @@ public enum BuildTraceCLI {
             i += 1
         }
 
-        return (buildId, limit, pattern, projectId, workspacePath, json)
+        return (buildId, limit, pattern, projectId, workspacePath, targetName, json)
     }
 
     private static func output<T: Encodable>(_ value: T, json: Bool) {
@@ -465,6 +485,89 @@ public enum BuildTraceCLI {
                     if build.warningCount > 0 {
                         print("  Warnings: \(build.warningCount)")
                     }
+                }
+            }
+        }
+        return true
+    }
+
+    // MARK: - Import analysis commands
+
+    private static func handleImports(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+        let options = parseOptions(arguments)
+        let imports = db.queryTargetImports(buildId: options.buildId, targetName: options.targetName)
+
+        if options.json {
+            output(imports, json: true)
+        } else {
+            if imports.isEmpty {
+                print("No import data found")
+                print("\nImport scanning may not have been enabled during the build.")
+                print("Ensure SWB_BUILD_TRACE_IMPORTS is not set to '0' when building.")
+            } else {
+                print("Target Imports")
+                print("==============")
+                for targetImport in imports {
+                    print("\n\(targetImport.targetName):")
+                    for importInfo in targetImport.imports {
+                        print("  - \(importInfo.moduleName) (\(importInfo.fileCount) files)")
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private static func handleImplicitDeps(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+        let options = parseOptions(arguments)
+        let implicitDeps = db.queryImplicitDependencies(buildId: options.buildId)
+
+        if options.json {
+            output(implicitDeps, json: true)
+        } else {
+            if implicitDeps.isEmpty {
+                print("No implicit dependencies found")
+                print("\nThis means all imports are properly declared as dependencies.")
+            } else {
+                print("Implicit Dependencies")
+                print("=====================")
+                print("These modules are imported but not declared as dependencies:\n")
+                for dep in implicitDeps {
+                    print("\(dep.targetName) imports \(dep.importedModule)")
+                    print("  -> \(dep.suggestion)")
+                    if !dep.importingFiles.isEmpty {
+                        let fileCount = dep.importingFiles.count
+                        let displayFiles = dep.importingFiles.prefix(3)
+                        print("  Files: \(displayFiles.joined(separator: ", "))\(fileCount > 3 ? " (+\(fileCount - 3) more)" : "")")
+                    }
+                    print()
+                }
+            }
+        }
+        return true
+    }
+
+    private static func handleRedundantDeps(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+        let options = parseOptions(arguments)
+        let redundantDeps = db.queryRedundantDependencies(buildId: options.buildId)
+
+        if options.json {
+            output(redundantDeps, json: true)
+        } else {
+            if redundantDeps.isEmpty {
+                print("No redundant dependencies found")
+                print("\nThis means all declared dependencies are being used.")
+            } else {
+                print("Redundant Dependencies")
+                print("======================")
+                print("These dependencies are declared but never imported:\n")
+                for dep in redundantDeps {
+                    print("\(dep.targetName) declares \(dep.declaredDependency) but never imports it")
+                    print("  -> \(dep.suggestion)")
+                    print()
                 }
             }
         }
