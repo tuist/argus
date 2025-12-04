@@ -25,6 +25,14 @@ final class BuildTraceDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "com.apple.swiftbuild.tracedb")
 
+    /// Waits for all pending database operations to complete.
+    ///
+    /// This should be called before the database is closed to ensure
+    /// all async operations finish writing to the database.
+    func flush() {
+        queue.sync {}
+    }
+
     /// Current schema version for migrations.
     private static let schemaVersion = 4
 
@@ -45,6 +53,8 @@ final class BuildTraceDatabase: @unchecked Sendable {
     }
 
     deinit {
+        // Ensure all pending async operations complete before closing
+        flush()
         if let db = db {
             sqlite3_close(db)
         }

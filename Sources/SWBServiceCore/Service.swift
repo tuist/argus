@@ -89,6 +89,11 @@ open class Service: @unchecked Sendable {
     }
 
     open func shutdown(_ error: (any Error)? = nil) {
+        // Flush build trace database before shutdown to ensure all data is written
+        #if canImport(SQLite3)
+        BuildTraceRecorder.shared?.flush()
+        #endif
+
         // Clear all caches, then check for leaks.
         SWBUtil.clearAllHeavyCaches()
 
