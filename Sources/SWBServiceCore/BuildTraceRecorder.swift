@@ -85,6 +85,14 @@ public final class BuildTraceRecorder: @unchecked Sendable {
         self.importScanningEnabled = ProcessInfo.processInfo.environment["SWB_BUILD_TRACE_IMPORTS"] != "0"
     }
 
+    /// Flushes all pending database operations.
+    ///
+    /// This should be called before the service shuts down to ensure
+    /// all recorded data is written to the database.
+    public func flush() {
+        database.flush()
+    }
+
     /// Records a build operation message.
     ///
     /// This method is called for every message sent by the build service.
