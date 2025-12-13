@@ -1134,10 +1134,65 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
-    // MARK: - Build graph queries
+    // MARK: - Build graph queries (Tuist-style interface)
 
-    /// Queries the full build graph with all targets and their linked dependencies.
-    func queryBuildGraph(buildId: String) -> BuildGraph? {
+    /// Maps label strings to link_kind values in the database
+    private func labelToLinkKind(_ label: String) -> String? {
+        switch label {
+        case "target": return nil  // Targets are in target_products, not linked_dependencies
+        case "package": return "static"  // Swift packages typically link statically
+        case "framework": return "framework"
+        case "xcframework": return "framework"  // XCFrameworks appear as frameworks
+        case "sdk": return "dynamic"  // SDK frameworks are dynamic
+        case "bundle": return nil  // Bundles don't link
+        default: return nil
+        }
+    }
+
+    /// Filters dependencies by label types
+    private func filterDependencies(_ deps: [GraphDependency], labels: [String]) -> [GraphDependency] {
+        guard !labels.isEmpty else { return deps }
+
+        return deps.filter { dep in
+            for label in labels {
+                switch label {
+                case "target":
+                    // Check if dependency name matches a known target
+                    if dep.name != nil { return true }
+                case "package":
+                    if dep.kind == "static" && !dep.isSystem { return true }
+                case "framework":
+                    if dep.kind == "framework" || dep.kind == "dynamic" { return true }
+                case "xcframework":
+                    if dep.path.hasSuffix(".xcframework") { return true }
+                case "sdk":
+                    if dep.isSystem { return true }
+                case "bundle":
+                    if dep.path.hasSuffix(".bundle") { return true }
+                default:
+                    break
+                }
+            }
+            return false
+        }
+    }
+
+    /// Projects dependency fields based on requested field list
+    private func projectDependency(_ dep: GraphDependency, fields: [String]) -> GraphDependency {
+        // If no fields specified, return all
+        guard !fields.isEmpty else { return dep }
+
+        return GraphDependency(
+            name: fields.contains("name") ? dep.name : nil,
+            path: fields.contains("path") ? dep.path : "",
+            kind: fields.contains("type") || fields.contains("linking") ? dep.kind : "",
+            mode: fields.contains("linking") ? dep.mode : "",
+            isSystem: dep.isSystem
+        )
+    }
+
+    /// Queries the full build graph with optional label filtering and field projection.
+    func queryBuildGraph(buildId: String, labels: [String] = [], fields: [String] = []) -> BuildGraph? {
         queue.sync {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return nil }
@@ -1201,17 +1256,21 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 dependenciesByGuid[targetGuid, default: []].append(dep)
             }
 
-            // Combine targets with their dependencies
+            // Combine targets with their dependencies, applying filters
             let targets = targetsByGuid.values.map { target in
-                GraphTarget(
+                let deps = dependenciesByGuid[target.guid] ?? []
+                let filteredDeps = filterDependencies(deps, labels: labels)
+                let projectedDeps = filteredDeps.map { projectDependency($0, fields: fields) }
+
+                return GraphTarget(
                     name: target.name,
                     guid: target.guid,
-                    productType: target.productType,
-                    artifactKind: target.artifactKind,
+                    productType: fields.isEmpty || fields.contains("product") ? target.productType : nil,
+                    artifactKind: fields.isEmpty || fields.contains("type") ? target.artifactKind : nil,
                     machOType: target.machOType,
                     isWrapper: target.isWrapper,
-                    productPath: target.productPath,
-                    dependencies: dependenciesByGuid[target.guid] ?? []
+                    productPath: fields.isEmpty || fields.contains("path") ? target.productPath : nil,
+                    dependencies: projectedDeps
                 )
             }.sorted { $0.name < $1.name }
 
@@ -1219,86 +1278,274 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
-    /// Queries what a specific target links (its dependencies).
-    func queryTargetDeps(buildId: String, targetName: String) -> DepsResult? {
+    /// Queries what a specific target depends on (--source option).
+    /// - Parameters:
+    ///   - buildId: The build ID to query
+    ///   - source: The source target name
+    ///   - labels: Filter by dependency type
+    ///   - fields: Control output projection
+    ///   - directOnly: If true, only return direct dependencies. If false (default), return all transitive dependencies.
+    func queryGraphSource(buildId: String, source: String, labels: [String] = [], fields: [String] = [], directOnly: Bool = false) -> SourceResult? {
         queue.sync {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return nil }
 
-            // First find the target GUID by name
-            let guidSql = "SELECT target_guid FROM target_products WHERE build_id = ? AND target_name = ? LIMIT 1"
-            var guidStatement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, guidSql, -1, &guidStatement, nil) == SQLITE_OK else { return nil }
-            defer { sqlite3_finalize(guidStatement) }
+            // Build target name -> GUID mapping and GUID -> name mapping
+            var guidToName: [String: String] = [:]
+            var nameToGuid: [String: String] = [:]
 
-            sqlite3_bind_text(guidStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            sqlite3_bind_text(guidStatement, 2, targetName, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            let productsSql = "SELECT target_guid, target_name FROM target_products WHERE build_id = ?"
+            var productsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, productsSql, -1, &productsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(productsStatement) }
 
-            guard sqlite3_step(guidStatement) == SQLITE_ROW else { return nil }
-            let targetGuid = String(cString: sqlite3_column_text(guidStatement, 0))
+            sqlite3_bind_text(productsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
 
-            // Then get all dependencies for this target
+            while sqlite3_step(productsStatement) == SQLITE_ROW {
+                let guid = String(cString: sqlite3_column_text(productsStatement, 0))
+                let name = String(cString: sqlite3_column_text(productsStatement, 1))
+                guidToName[guid] = name
+                nameToGuid[name] = guid
+            }
+
+            guard let sourceGuid = nameToGuid[source] else { return nil }
+
+            // Build dependency graph: targetGuid -> [dependency info]
+            var dependencyGraph: [String: [GraphDependency]] = [:]
+
             let depsSql = """
-                SELECT dependency_path, link_kind, link_mode, dependency_name, is_system
+                SELECT target_guid, dependency_path, link_kind, link_mode, dependency_name, is_system
                 FROM linked_dependencies
-                WHERE build_id = ? AND target_guid = ?
+                WHERE build_id = ?
                 """
             var depsStatement: OpaquePointer?
             guard sqlite3_prepare_v2(db, depsSql, -1, &depsStatement, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(depsStatement) }
 
             sqlite3_bind_text(depsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            sqlite3_bind_text(depsStatement, 2, targetGuid, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
 
-            var dependencies: [GraphDependency] = []
             while sqlite3_step(depsStatement) == SQLITE_ROW {
-                let path = String(cString: sqlite3_column_text(depsStatement, 0))
-                let kind = String(cString: sqlite3_column_text(depsStatement, 1))
-                let mode = String(cString: sqlite3_column_text(depsStatement, 2))
-                let name = sqlite3_column_type(depsStatement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(depsStatement, 3)) : nil
-                let isSystem = sqlite3_column_int(depsStatement, 4) == 1
+                let targetGuid = String(cString: sqlite3_column_text(depsStatement, 0))
+                let path = String(cString: sqlite3_column_text(depsStatement, 1))
+                let kind = String(cString: sqlite3_column_text(depsStatement, 2))
+                let mode = String(cString: sqlite3_column_text(depsStatement, 3))
+                let name = sqlite3_column_type(depsStatement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(depsStatement, 4)) : nil
+                let isSystem = sqlite3_column_int(depsStatement, 5) == 1
 
-                dependencies.append(GraphDependency(name: name, path: path, kind: kind, mode: mode, isSystem: isSystem))
+                let dep = GraphDependency(name: name, path: path, kind: kind, mode: mode, isSystem: isSystem)
+                dependencyGraph[targetGuid, default: []].append(dep)
             }
 
-            return DepsResult(target: targetName, dependencies: dependencies)
+            var dependencies: [GraphDependency] = []
+
+            if directOnly {
+                // Only direct dependencies
+                dependencies = dependencyGraph[sourceGuid] ?? []
+            } else {
+                // Transitive dependencies: collect all dependencies recursively
+                var seen: Set<String> = []  // Track by dependency name/path to avoid duplicates
+                var toVisit: [String] = [sourceGuid]
+
+                while !toVisit.isEmpty {
+                    let currentGuid = toVisit.removeFirst()
+                    guard let deps = dependencyGraph[currentGuid] else { continue }
+
+                    for dep in deps {
+                        let key = dep.name ?? dep.path  // Use name if available, otherwise path
+                        if !seen.contains(key) {
+                            seen.insert(key)
+                            dependencies.append(dep)
+
+                            // If this dependency is a known target, add it to visit queue
+                            if let depName = dep.name, let depGuid = nameToGuid[depName] {
+                                toVisit.append(depGuid)
+                            }
+                        }
+                    }
+                }
+            }
+
+            let filteredDeps = filterDependencies(dependencies, labels: labels)
+            let projectedDeps = filteredDeps.map { projectDependency($0, fields: fields) }
+
+            return SourceResult(source: source, dependencies: projectedDeps)
         }
     }
 
-    /// Queries what targets link a specific target (reverse lookup).
-    func queryTargetCallers(buildId: String, targetName: String) -> CallersResult? {
+    /// Queries what targets depend on a specific target (--sink option).
+    /// - Parameters:
+    ///   - buildId: The build ID to query
+    ///   - sink: The sink target name
+    ///   - labels: Filter by dependency type
+    ///   - fields: Control output projection
+    ///   - directOnly: If true, only return direct dependents. If false (default), return all transitive dependents.
+    func queryGraphSink(buildId: String, sink: String, labels: [String] = [], fields: [String] = [], directOnly: Bool = false) -> SinkResult? {
         queue.sync {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return nil }
 
-            // Find all targets that have this target as a dependency (by name)
-            let sql = """
-                SELECT DISTINCT
-                    tp.target_name,
-                    ld.link_kind,
-                    ld.link_mode
-                FROM linked_dependencies ld
-                INNER JOIN target_products tp ON ld.build_id = tp.build_id AND ld.target_guid = tp.target_guid
-                WHERE ld.build_id = ? AND ld.dependency_name = ?
-                ORDER BY tp.target_name
-                """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
-            defer { sqlite3_finalize(statement) }
+            // Build target name -> GUID mapping
+            var nameToGuid: [String: String] = [:]
+            var guidToName: [String: String] = [:]
+            var guidToArtifactKind: [String: String?] = [:]
 
-            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            sqlite3_bind_text(statement, 2, targetName, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            let productsSql = "SELECT target_guid, target_name, artifact_kind FROM target_products WHERE build_id = ?"
+            var productsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, productsSql, -1, &productsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(productsStatement) }
 
-            var callers: [CallerInfo] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                let name = String(cString: sqlite3_column_text(statement, 0))
-                let kind = String(cString: sqlite3_column_text(statement, 1))
-                let mode = String(cString: sqlite3_column_text(statement, 2))
+            sqlite3_bind_text(productsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
 
-                callers.append(CallerInfo(name: name, kind: kind, mode: mode))
+            while sqlite3_step(productsStatement) == SQLITE_ROW {
+                let guid = String(cString: sqlite3_column_text(productsStatement, 0))
+                let name = String(cString: sqlite3_column_text(productsStatement, 1))
+                let artifactKind = sqlite3_column_type(productsStatement, 2) != SQLITE_NULL ? String(cString: sqlite3_column_text(productsStatement, 2)) : nil
+                nameToGuid[name] = guid
+                guidToName[guid] = name
+                guidToArtifactKind[guid] = artifactKind
             }
 
-            return CallersResult(target: targetName, callers: callers)
+            // Build reverse dependency graph: dependency name -> [(dependent guid, linkKind, linkMode)]
+            var reverseDeps: [String: [(guid: String, linkKind: String, linkMode: String)]] = [:]
+
+            let depsSql = """
+                SELECT target_guid, dependency_name, link_kind, link_mode
+                FROM linked_dependencies
+                WHERE build_id = ? AND dependency_name IS NOT NULL
+                """
+            var depsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, depsSql, -1, &depsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(depsStatement) }
+
+            sqlite3_bind_text(depsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            while sqlite3_step(depsStatement) == SQLITE_ROW {
+                let targetGuid = String(cString: sqlite3_column_text(depsStatement, 0))
+                let depName = String(cString: sqlite3_column_text(depsStatement, 1))
+                let linkKind = String(cString: sqlite3_column_text(depsStatement, 2))
+                let linkMode = String(cString: sqlite3_column_text(depsStatement, 3))
+
+                reverseDeps[depName, default: []].append((targetGuid, linkKind, linkMode))
+            }
+
+            var dependents: [DependentInfo] = []
+
+            if directOnly {
+                // Only direct dependents
+                for (guid, linkKind, linkMode) in reverseDeps[sink] ?? [] {
+                    if let name = guidToName[guid] {
+                        let artifactKind = guidToArtifactKind[guid] ?? nil
+                        let info = DependentInfo(
+                            name: fields.isEmpty || fields.contains("name") ? name : "",
+                            type: fields.isEmpty || fields.contains("type") ? artifactKind : nil,
+                            linking: fields.isEmpty || fields.contains("linking") ? linkKind : nil,
+                            mode: fields.isEmpty || fields.contains("linking") ? linkMode : nil
+                        )
+                        dependents.append(info)
+                    }
+                }
+            } else {
+                // Transitive dependents: find all targets that transitively depend on sink
+                var seen: Set<String> = []  // Track by target name to avoid duplicates
+                var toVisit: [String] = [sink]
+
+                while !toVisit.isEmpty {
+                    let current = toVisit.removeFirst()
+                    guard let directDependents = reverseDeps[current] else { continue }
+
+                    for (guid, linkKind, linkMode) in directDependents {
+                        if let name = guidToName[guid], !seen.contains(name) {
+                            seen.insert(name)
+                            let artifactKind = guidToArtifactKind[guid] ?? nil
+                            let info = DependentInfo(
+                                name: fields.isEmpty || fields.contains("name") ? name : "",
+                                type: fields.isEmpty || fields.contains("type") ? artifactKind : nil,
+                                linking: fields.isEmpty || fields.contains("linking") ? linkKind : nil,
+                                mode: fields.isEmpty || fields.contains("linking") ? linkMode : nil
+                            )
+                            dependents.append(info)
+                            toVisit.append(name)  // Add to visit queue to find its dependents
+                        }
+                    }
+                }
+            }
+
+            dependents.sort { $0.name < $1.name }
+            return SinkResult(sink: sink, dependents: dependents)
+        }
+    }
+
+    /// Queries the path between two targets (--source and --sink together).
+    func queryGraphPath(buildId: String, source: String, sink: String, labels: [String] = [], fields: [String] = []) -> PathResult? {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return nil }
+
+            // Build a dependency graph and find path using BFS
+            // First, load all targets and their dependencies
+            var graph: [String: [String]] = [:]  // target name -> dependency names
+            var allTargets: Set<String> = []
+
+            // Load targets
+            let targetsSql = "SELECT target_name FROM target_products WHERE build_id = ?"
+            var targetsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, targetsSql, -1, &targetsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(targetsStatement) }
+
+            sqlite3_bind_text(targetsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            while sqlite3_step(targetsStatement) == SQLITE_ROW {
+                let name = String(cString: sqlite3_column_text(targetsStatement, 0))
+                allTargets.insert(name)
+                graph[name] = []
+            }
+
+            // Verify source and sink exist
+            guard allTargets.contains(source) else { return nil }
+            guard allTargets.contains(sink) else { return nil }
+
+            // Load dependencies
+            let depsSql = """
+                SELECT tp.target_name, ld.dependency_name
+                FROM linked_dependencies ld
+                INNER JOIN target_products tp ON ld.build_id = tp.build_id AND ld.target_guid = tp.target_guid
+                WHERE ld.build_id = ? AND ld.dependency_name IS NOT NULL
+                """
+            var depsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, depsSql, -1, &depsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(depsStatement) }
+
+            sqlite3_bind_text(depsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            while sqlite3_step(depsStatement) == SQLITE_ROW {
+                let targetName = String(cString: sqlite3_column_text(depsStatement, 0))
+                let depName = String(cString: sqlite3_column_text(depsStatement, 1))
+                graph[targetName, default: []].append(depName)
+            }
+
+            // BFS to find path from source to sink
+            var queue: [[String]] = [[source]]
+            var visited: Set<String> = [source]
+
+            while !queue.isEmpty {
+                let path = queue.removeFirst()
+                let current = path.last!
+
+                if current == sink {
+                    // Found path
+                    return PathResult(source: source, sink: sink, path: path)
+                }
+
+                for neighbor in graph[current] ?? [] {
+                    if !visited.contains(neighbor) {
+                        visited.insert(neighbor)
+                        queue.append(path + [neighbor])
+                    }
+                }
+            }
+
+            // No path found
+            return nil
         }
     }
 
@@ -1510,6 +1757,35 @@ struct CallerInfo: Codable {
     let name: String
     let kind: String
     let mode: String
+}
+
+// MARK: - Tuist-style graph query result types
+
+/// Result for --source queries: what does this target depend on?
+struct SourceResult: Codable {
+    let source: String
+    let dependencies: [GraphDependency]
+}
+
+/// Result for --sink queries: what depends on this target?
+struct SinkResult: Codable {
+    let sink: String
+    let dependents: [DependentInfo]
+}
+
+/// Information about a target that depends on the sink
+struct DependentInfo: Codable {
+    let name: String
+    let type: String?
+    let linking: String?
+    let mode: String?
+}
+
+/// Result for path queries: path between --source and --sink
+struct PathResult: Codable {
+    let source: String
+    let sink: String
+    let path: [String]
 }
 
 #endif // canImport(SQLite3)

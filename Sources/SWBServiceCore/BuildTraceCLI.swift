@@ -68,8 +68,6 @@ public enum BuildTraceCLI {
             return handleRedundantDeps(arguments: remainingArgs)
         case "graph":
             return handleGraph(arguments: remainingArgs)
-        case "deps":
-            return handleDeps(arguments: remainingArgs)
         case "help", "--help", "-h":
             printUsage()
             return true
@@ -98,10 +96,9 @@ public enum BuildTraceCLI {
           imports             Show imports per target (requires import scanning)
           implicit-deps       Show implicit dependencies (imported but not declared)
           redundant-deps      Show redundant dependencies (declared but not imported)
-          graph               Show full build graph with targets and linking info
-          deps                Query dependencies (deps <target>, deps callers <target>, deps graph)
+          graph               Query build graph with targets and linking info
 
-        Options:
+        General Options:
           --build <id>        Build ID or "latest" (default: latest)
           --limit <n>         Limit results (default: 10)
           --pattern <text>    Search pattern (for search-errors)
@@ -111,6 +108,17 @@ public enum BuildTraceCLI {
           --json              Output as JSON
           --format <fmt>      Output format: json or toon (default: json)
 
+        Graph Options (inspired by Mix xref):
+          --source <target>   What does this target depend on? (transitive by default)
+          --sink <target>     What depends on this target? (transitive by default)
+          --direct            Show only direct dependencies (not transitive)
+          --label <type>      Filter by dependency type
+          --fields <list>     Control output projection (comma-separated)
+
+        Label Values: target, package, framework, xcframework, sdk, bundle
+
+        Field Values: name, type, linking, status, path, platform, product
+
         Environment Variables (set when running xcodebuild):
           SWB_BUILD_TRACE_ID         Custom build identifier
           SWB_BUILD_PROJECT_ID       Project identifier for grouping builds
@@ -118,18 +126,24 @@ public enum BuildTraceCLI {
           SWB_BUILD_TRACE_IMPORTS=0  Disable import scanning (for performance)
 
         Examples:
+          # Build analysis
           SWBBuildService trace summary --build latest
           SWBBuildService trace errors --build latest
           SWBBuildService trace slowest-targets --limit 5
-          SWBBuildService trace search-errors --pattern "linker"
-          SWBBuildService trace projects
-          SWBBuildService trace builds --project my-project --limit 10
-          SWBBuildService trace imports --build latest
+
+          # Dependency analysis
           SWBBuildService trace implicit-deps --build latest
           SWBBuildService trace redundant-deps --build latest
-          SWBBuildService trace graph --build latest --format json
-          SWBBuildService trace deps MyApp --format toon
-          SWBBuildService trace deps callers NetworkingKit --format json
+
+          # Graph queries (Tuist-style)
+          SWBBuildService trace graph                                    # Full graph
+          SWBBuildService trace graph --source MyApp                     # All deps of MyApp (transitive)
+          SWBBuildService trace graph --source MyApp --direct            # Only direct deps of MyApp
+          SWBBuildService trace graph --sink CoreKit                     # What depends on CoreKit?
+          SWBBuildService trace graph --source MyApp --label package     # MyApp's package dependencies
+          SWBBuildService trace graph --sink CoreKit --fields name,linking
+          SWBBuildService trace graph --source MyApp --sink CoreKit      # Path between targets
+          SWBBuildService trace graph --fields name,type,linking         # All deps with specific fields
         """)
     }
 
@@ -146,6 +160,92 @@ public enum BuildTraceCLI {
     enum OutputFormat: String {
         case json
         case toon
+    }
+
+    /// Dependency label types for filtering
+    enum DependencyLabel: String, CaseIterable {
+        case target
+        case package
+        case framework
+        case xcframework
+        case sdk
+        case bundle
+    }
+
+    /// Available fields for output projection
+    enum GraphField: String, CaseIterable {
+        case name
+        case type
+        case linking
+        case status
+        case path
+        case platform
+        case product
+    }
+
+    struct GraphOptions {
+        var source: String? = nil      // --source: What does this target depend on?
+        var sink: String? = nil        // --sink: What depends on this target?
+        var labels: [DependencyLabel] = []  // --label: Filter by dependency type
+        var fields: [GraphField] = []  // --fields: Control output projection
+        var format: OutputFormat = .json
+        var buildId: String = "latest"
+        var directOnly: Bool = false   // --direct: Only show direct dependencies (default: transitive)
+    }
+
+    private static func parseGraphOptions(_ arguments: [String]) -> GraphOptions {
+        var options = GraphOptions()
+
+        var i = 0
+        while i < arguments.count {
+            switch arguments[i] {
+            case "--source":
+                if i + 1 < arguments.count {
+                    options.source = arguments[i + 1]
+                    i += 1
+                }
+            case "--sink":
+                if i + 1 < arguments.count {
+                    options.sink = arguments[i + 1]
+                    i += 1
+                }
+            case "--label":
+                if i + 1 < arguments.count {
+                    let labelStr = arguments[i + 1]
+                    if let label = DependencyLabel(rawValue: labelStr) {
+                        options.labels.append(label)
+                    }
+                    i += 1
+                }
+            case "--fields":
+                if i + 1 < arguments.count {
+                    let fieldsStr = arguments[i + 1]
+                    options.fields = fieldsStr.split(separator: ",").compactMap {
+                        GraphField(rawValue: String($0))
+                    }
+                    i += 1
+                }
+            case "--format":
+                if i + 1 < arguments.count {
+                    if let f = OutputFormat(rawValue: arguments[i + 1]) {
+                        options.format = f
+                    }
+                    i += 1
+                }
+            case "--build":
+                if i + 1 < arguments.count {
+                    options.buildId = arguments[i + 1]
+                    i += 1
+                }
+            case "--direct":
+                options.directOnly = true
+            default:
+                break
+            }
+            i += 1
+        }
+
+        return options
     }
 
     private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, targetName: String?, json: Bool, format: OutputFormat) {
@@ -619,82 +719,83 @@ public enum BuildTraceCLI {
 
     private static func handleGraph(arguments: [String]) -> Bool {
         guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
+        let options = parseGraphOptions(arguments)
 
-        guard let graph = db.queryBuildGraph(buildId: options.buildId) else {
-            print("No build graph data found")
-            print("\nProduct type and linking information is recorded during builds.")
-            print("Make sure you have run at least one build with tracing enabled.")
-            return true
-        }
-
-        if graph.targets.isEmpty {
-            print("No targets with product information found")
-            print("\nThis feature requires product type data to be recorded during builds.")
-            return true
-        }
-
-        outputWithFormat(graph, format: options.format)
-        return true
-    }
-
-    private static func handleDeps(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-
-        // Parse the deps subcommand:
-        // deps graph                  -> full graph (alias for trace graph)
-        // deps callers <target>       -> what links this target
-        // deps <target>               -> what does this target link
-        guard !arguments.isEmpty else {
-            print("Usage: trace deps <target> | trace deps callers <target> | trace deps graph")
-            return true
-        }
-
-        let subcommand = arguments[0]
-
-        if subcommand == "graph" {
-            // Alias for trace graph
-            return handleGraph(arguments: Array(arguments.dropFirst()))
-        }
-
-        if subcommand == "callers" {
-            // deps callers <target>
-            guard arguments.count >= 2 else {
-                print("Usage: trace deps callers <target>")
+        // Determine query mode based on options
+        if let source = options.source, let sink = options.sink {
+            // Path between two targets
+            guard let path = db.queryGraphPath(
+                buildId: options.buildId,
+                source: source,
+                sink: sink,
+                labels: options.labels.map { $0.rawValue },
+                fields: options.fields.map { $0.rawValue }
+            ) else {
+                print("No path found between '\(source)' and '\(sink)'")
                 return true
             }
-            let targetName = arguments[1]
-            let remainingArgs = Array(arguments.dropFirst(2))
-            let options = parseOptions(remainingArgs)
+            outputWithFormat(path, format: options.format)
 
-            guard let result = db.queryTargetCallers(buildId: options.buildId, targetName: targetName) else {
-                print("Target '\(targetName)' not found in build")
+        } else if let source = options.source {
+            // What does this target depend on? (--source)
+            guard let result = db.queryGraphSource(
+                buildId: options.buildId,
+                source: source,
+                labels: options.labels.map { $0.rawValue },
+                fields: options.fields.map { $0.rawValue },
+                directOnly: options.directOnly
+            ) else {
+                print("Target '\(source)' not found in build")
                 return true
             }
-
-            if result.callers.isEmpty {
-                print("No targets link '\(targetName)'")
+            if result.dependencies.isEmpty {
+                let depType = options.directOnly ? "direct dependencies" : "dependencies"
+                print("Target '\(source)' has no \(depType)")
             } else {
                 outputWithFormat(result, format: options.format)
             }
-            return true
-        }
 
-        // deps <target> -> what does this target link
-        let targetName = subcommand
-        let remainingArgs = Array(arguments.dropFirst())
-        let options = parseOptions(remainingArgs)
+        } else if let sink = options.sink {
+            // What depends on this target? (--sink)
+            guard let result = db.queryGraphSink(
+                buildId: options.buildId,
+                sink: sink,
+                labels: options.labels.map { $0.rawValue },
+                fields: options.fields.map { $0.rawValue },
+                directOnly: options.directOnly
+            ) else {
+                print("Target '\(sink)' not found in build")
+                return true
+            }
+            if result.dependents.isEmpty {
+                let depType = options.directOnly ? "direct dependents" : "dependents"
+                print("No targets are \(depType) of '\(sink)'")
+            } else {
+                outputWithFormat(result, format: options.format)
+            }
 
-        guard let result = db.queryTargetDeps(buildId: options.buildId, targetName: targetName) else {
-            print("Target '\(targetName)' not found in build")
-            return true
-        }
-
-        if result.dependencies.isEmpty {
-            print("Target '\(targetName)' has no linked dependencies")
         } else {
-            outputWithFormat(result, format: options.format)
+            // Full graph
+            guard let graph = db.queryBuildGraph(
+                buildId: options.buildId,
+                labels: options.labels.map { $0.rawValue },
+                fields: options.fields.map { $0.rawValue }
+            ) else {
+                print("No build graph data found")
+                print("\nProduct type and linking information is recorded during builds.")
+                print("Make sure you have run at least one build with tracing enabled.")
+                return true
+            }
+
+            if graph.targets.isEmpty {
+                print("No targets with product information found")
+                print("\nThis feature requires product type data to be recorded during builds.")
+                return true
+            }
+
+            outputWithFormat(graph, format: options.format)
         }
+
         return true
     }
 }
