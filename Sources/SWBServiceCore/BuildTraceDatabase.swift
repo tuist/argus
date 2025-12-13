@@ -34,7 +34,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
     }
 
     /// Current schema version for migrations.
-    private static let schemaVersion = 4
+    private static let schemaVersion = 5
 
     /// Creates or opens a build trace database at the given path.
     ///
@@ -169,6 +169,33 @@ final class BuildTraceDatabase: @unchecked Sendable {
             FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
+        -- Target products: Product type and artifact information per target.
+        CREATE TABLE IF NOT EXISTS target_products (
+            id INTEGER PRIMARY KEY,
+            build_id TEXT NOT NULL,
+            target_guid TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            product_type TEXT,
+            artifact_kind TEXT,
+            mach_o_type TEXT,
+            is_wrapper INTEGER DEFAULT 0,
+            product_path TEXT,
+            FOREIGN KEY (build_id) REFERENCES builds(id)
+        );
+
+        -- Linked dependencies: What each target links and how.
+        CREATE TABLE IF NOT EXISTS linked_dependencies (
+            id INTEGER PRIMARY KEY,
+            build_id TEXT NOT NULL,
+            target_guid TEXT NOT NULL,
+            dependency_path TEXT NOT NULL,
+            link_kind TEXT NOT NULL,
+            link_mode TEXT NOT NULL,
+            dependency_name TEXT,
+            is_system INTEGER DEFAULT 0,
+            FOREIGN KEY (build_id) REFERENCES builds(id)
+        );
+
         -- Indexes for common queries
         CREATE INDEX IF NOT EXISTS idx_build_targets_build_id ON build_targets(build_id);
         CREATE INDEX IF NOT EXISTS idx_build_tasks_build_id ON build_tasks(build_id);
@@ -185,6 +212,12 @@ final class BuildTraceDatabase: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_source_imports_build_id ON source_imports(build_id);
         CREATE INDEX IF NOT EXISTS idx_source_imports_target ON source_imports(build_id, target_name);
         CREATE INDEX IF NOT EXISTS idx_source_imports_module ON source_imports(build_id, imported_module);
+        CREATE INDEX IF NOT EXISTS idx_target_products_build ON target_products(build_id);
+        CREATE INDEX IF NOT EXISTS idx_target_products_kind ON target_products(artifact_kind);
+        CREATE INDEX IF NOT EXISTS idx_target_products_guid ON target_products(target_guid);
+        CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id);
+        CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid);
+        CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind);
 
         -- Top-N layer: Views for common agent queries
         -- Slowest targets per build (pre-sorted)
@@ -260,6 +293,20 @@ final class BuildTraceDatabase: @unchecked Sendable {
             // because PackageProductTargets have different GUIDs than the actual targets
             // that build, but share the same name.
             try? execute("ALTER TABLE target_dependencies ADD COLUMN depends_on_name TEXT")
+        }
+
+        if currentVersion < 5 {
+            // Migration to version 5: Add target_products and linked_dependencies tables
+            // These tables track product type information and linking relationships for
+            // AI agent optimization analysis.
+            // Tables are created via CREATE TABLE IF NOT EXISTS in createTables(),
+            // so we just need to ensure the indexes exist.
+            try execute("CREATE INDEX IF NOT EXISTS idx_target_products_build ON target_products(build_id)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_target_products_kind ON target_products(artifact_kind)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_target_products_guid ON target_products(target_guid)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid)")
+            try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind)")
         }
 
         // Update schema version
@@ -468,6 +515,47 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 buildId, targetId, targetName, targetGuid, sourceFile, importedModule
+            )
+        }
+    }
+
+    func insertTargetProduct(
+        buildId: String,
+        targetGuid: String,
+        targetName: String,
+        productType: String?,
+        artifactKind: String?,
+        machOType: String?,
+        isWrapper: Bool,
+        productPath: String?
+    ) {
+        queue.async { [weak self] in
+            self?.executeInsert(
+                """
+                INSERT INTO target_products (build_id, target_guid, target_name, product_type, artifact_kind, mach_o_type, is_wrapper, product_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                buildId, targetGuid, targetName, productType, artifactKind, machOType, isWrapper ? 1 : 0, productPath
+            )
+        }
+    }
+
+    func insertLinkedDependency(
+        buildId: String,
+        targetGuid: String,
+        dependencyPath: String,
+        linkKind: String,
+        linkMode: String,
+        dependencyName: String?,
+        isSystem: Bool
+    ) {
+        queue.async { [weak self] in
+            self?.executeInsert(
+                """
+                INSERT INTO linked_dependencies (build_id, target_guid, dependency_path, link_kind, link_mode, dependency_name, is_system)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                buildId, targetGuid, dependencyPath, linkKind, linkMode, dependencyName, isSystem ? 1 : 0
             )
         }
     }
@@ -1046,6 +1134,174 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
+    // MARK: - Build graph queries
+
+    /// Queries the full build graph with all targets and their linked dependencies.
+    func queryBuildGraph(buildId: String) -> BuildGraph? {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return nil }
+
+            // First, get all target products
+            var targetsByGuid: [String: GraphTarget] = [:]
+            let productsSql = """
+                SELECT target_guid, target_name, product_type, artifact_kind, mach_o_type, is_wrapper, product_path
+                FROM target_products
+                WHERE build_id = ?
+                """
+            var productsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, productsSql, -1, &productsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(productsStatement) }
+
+            sqlite3_bind_text(productsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            while sqlite3_step(productsStatement) == SQLITE_ROW {
+                let guid = String(cString: sqlite3_column_text(productsStatement, 0))
+                let name = String(cString: sqlite3_column_text(productsStatement, 1))
+                let productType = sqlite3_column_type(productsStatement, 2) != SQLITE_NULL ? String(cString: sqlite3_column_text(productsStatement, 2)) : nil
+                let artifactKind = sqlite3_column_type(productsStatement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(productsStatement, 3)) : nil
+                let machOType = sqlite3_column_type(productsStatement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(productsStatement, 4)) : nil
+                let isWrapper = sqlite3_column_int(productsStatement, 5) == 1
+                let productPath = sqlite3_column_type(productsStatement, 6) != SQLITE_NULL ? String(cString: sqlite3_column_text(productsStatement, 6)) : nil
+
+                targetsByGuid[guid] = GraphTarget(
+                    name: name,
+                    guid: guid,
+                    productType: productType,
+                    artifactKind: artifactKind,
+                    machOType: machOType,
+                    isWrapper: isWrapper,
+                    productPath: productPath,
+                    dependencies: []
+                )
+            }
+
+            // Then, get all linked dependencies and attach them to targets
+            let depsSql = """
+                SELECT target_guid, dependency_path, link_kind, link_mode, dependency_name, is_system
+                FROM linked_dependencies
+                WHERE build_id = ?
+                """
+            var depsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, depsSql, -1, &depsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(depsStatement) }
+
+            sqlite3_bind_text(depsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var dependenciesByGuid: [String: [GraphDependency]] = [:]
+            while sqlite3_step(depsStatement) == SQLITE_ROW {
+                let targetGuid = String(cString: sqlite3_column_text(depsStatement, 0))
+                let path = String(cString: sqlite3_column_text(depsStatement, 1))
+                let kind = String(cString: sqlite3_column_text(depsStatement, 2))
+                let mode = String(cString: sqlite3_column_text(depsStatement, 3))
+                let name = sqlite3_column_type(depsStatement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(depsStatement, 4)) : nil
+                let isSystem = sqlite3_column_int(depsStatement, 5) == 1
+
+                let dep = GraphDependency(name: name, path: path, kind: kind, mode: mode, isSystem: isSystem)
+                dependenciesByGuid[targetGuid, default: []].append(dep)
+            }
+
+            // Combine targets with their dependencies
+            let targets = targetsByGuid.values.map { target in
+                GraphTarget(
+                    name: target.name,
+                    guid: target.guid,
+                    productType: target.productType,
+                    artifactKind: target.artifactKind,
+                    machOType: target.machOType,
+                    isWrapper: target.isWrapper,
+                    productPath: target.productPath,
+                    dependencies: dependenciesByGuid[target.guid] ?? []
+                )
+            }.sorted { $0.name < $1.name }
+
+            return BuildGraph(buildId: resolvedBuildId, targets: targets)
+        }
+    }
+
+    /// Queries what a specific target links (its dependencies).
+    func queryTargetDeps(buildId: String, targetName: String) -> DepsResult? {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return nil }
+
+            // First find the target GUID by name
+            let guidSql = "SELECT target_guid FROM target_products WHERE build_id = ? AND target_name = ? LIMIT 1"
+            var guidStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, guidSql, -1, &guidStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(guidStatement) }
+
+            sqlite3_bind_text(guidStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(guidStatement, 2, targetName, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            guard sqlite3_step(guidStatement) == SQLITE_ROW else { return nil }
+            let targetGuid = String(cString: sqlite3_column_text(guidStatement, 0))
+
+            // Then get all dependencies for this target
+            let depsSql = """
+                SELECT dependency_path, link_kind, link_mode, dependency_name, is_system
+                FROM linked_dependencies
+                WHERE build_id = ? AND target_guid = ?
+                """
+            var depsStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, depsSql, -1, &depsStatement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(depsStatement) }
+
+            sqlite3_bind_text(depsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(depsStatement, 2, targetGuid, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var dependencies: [GraphDependency] = []
+            while sqlite3_step(depsStatement) == SQLITE_ROW {
+                let path = String(cString: sqlite3_column_text(depsStatement, 0))
+                let kind = String(cString: sqlite3_column_text(depsStatement, 1))
+                let mode = String(cString: sqlite3_column_text(depsStatement, 2))
+                let name = sqlite3_column_type(depsStatement, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(depsStatement, 3)) : nil
+                let isSystem = sqlite3_column_int(depsStatement, 4) == 1
+
+                dependencies.append(GraphDependency(name: name, path: path, kind: kind, mode: mode, isSystem: isSystem))
+            }
+
+            return DepsResult(target: targetName, dependencies: dependencies)
+        }
+    }
+
+    /// Queries what targets link a specific target (reverse lookup).
+    func queryTargetCallers(buildId: String, targetName: String) -> CallersResult? {
+        queue.sync {
+            let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
+            guard let resolvedBuildId else { return nil }
+
+            // Find all targets that have this target as a dependency (by name)
+            let sql = """
+                SELECT DISTINCT
+                    tp.target_name,
+                    ld.link_kind,
+                    ld.link_mode
+                FROM linked_dependencies ld
+                INNER JOIN target_products tp ON ld.build_id = tp.build_id AND ld.target_guid = tp.target_guid
+                WHERE ld.build_id = ? AND ld.dependency_name = ?
+                ORDER BY tp.target_name
+                """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_text(statement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(statement, 2, targetName, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+            var callers: [CallerInfo] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let name = String(cString: sqlite3_column_text(statement, 0))
+                let kind = String(cString: sqlite3_column_text(statement, 1))
+                let mode = String(cString: sqlite3_column_text(statement, 2))
+
+                callers.append(CallerInfo(name: name, kind: kind, mode: mode))
+            }
+
+            return CallersResult(target: targetName, callers: callers)
+        }
+    }
+
     // MARK: - SQL execution helpers
 
     private func execute(_ sql: String) throws {
@@ -1212,6 +1468,48 @@ struct RedundantDependency: Codable {
     let targetName: String
     let declaredDependency: String
     let suggestion: String
+}
+
+// MARK: - Build graph result types
+
+struct GraphTarget: Codable {
+    let name: String
+    let guid: String
+    let productType: String?
+    let artifactKind: String?
+    let machOType: String?
+    let isWrapper: Bool
+    let productPath: String?
+    let dependencies: [GraphDependency]
+}
+
+struct GraphDependency: Codable {
+    let name: String?
+    let path: String
+    let kind: String
+    let mode: String
+    let isSystem: Bool
+}
+
+struct BuildGraph: Codable {
+    let buildId: String
+    let targets: [GraphTarget]
+}
+
+struct DepsResult: Codable {
+    let target: String
+    let dependencies: [GraphDependency]
+}
+
+struct CallersResult: Codable {
+    let target: String
+    let callers: [CallerInfo]
+}
+
+struct CallerInfo: Codable {
+    let name: String
+    let kind: String
+    let mode: String
 }
 
 #endif // canImport(SQLite3)

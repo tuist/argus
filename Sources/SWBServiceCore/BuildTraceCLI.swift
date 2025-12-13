@@ -14,6 +14,7 @@
 #if canImport(SQLite3)
 
 import Foundation
+import ToonFormat
 
 /// CLI for querying build trace data.
 ///
@@ -65,6 +66,10 @@ public enum BuildTraceCLI {
             return handleImplicitDeps(arguments: remainingArgs)
         case "redundant-deps":
             return handleRedundantDeps(arguments: remainingArgs)
+        case "graph":
+            return handleGraph(arguments: remainingArgs)
+        case "deps":
+            return handleDeps(arguments: remainingArgs)
         case "help", "--help", "-h":
             printUsage()
             return true
@@ -93,6 +98,8 @@ public enum BuildTraceCLI {
           imports             Show imports per target (requires import scanning)
           implicit-deps       Show implicit dependencies (imported but not declared)
           redundant-deps      Show redundant dependencies (declared but not imported)
+          graph               Show full build graph with targets and linking info
+          deps                Query dependencies (deps <target>, deps callers <target>, deps graph)
 
         Options:
           --build <id>        Build ID or "latest" (default: latest)
@@ -102,6 +109,7 @@ public enum BuildTraceCLI {
           --workspace <path>  Filter by workspace path
           --target <name>     Filter by target name (for imports command)
           --json              Output as JSON
+          --format <fmt>      Output format: json or toon (default: json)
 
         Environment Variables (set when running xcodebuild):
           SWB_BUILD_TRACE_ID         Custom build identifier
@@ -119,6 +127,9 @@ public enum BuildTraceCLI {
           SWBBuildService trace imports --build latest
           SWBBuildService trace implicit-deps --build latest
           SWBBuildService trace redundant-deps --build latest
+          SWBBuildService trace graph --build latest --format json
+          SWBBuildService trace deps MyApp --format toon
+          SWBBuildService trace deps callers NetworkingKit --format json
         """)
     }
 
@@ -132,7 +143,12 @@ public enum BuildTraceCLI {
         }
     }
 
-    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, targetName: String?, json: Bool) {
+    enum OutputFormat: String {
+        case json
+        case toon
+    }
+
+    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, targetName: String?, json: Bool, format: OutputFormat) {
         var buildId = "latest"
         var limit = 10
         var pattern: String? = nil
@@ -140,6 +156,7 @@ public enum BuildTraceCLI {
         var workspacePath: String? = nil
         var targetName: String? = nil
         var json = false
+        var format: OutputFormat = .json
 
         var i = 0
         while i < arguments.count {
@@ -176,13 +193,21 @@ public enum BuildTraceCLI {
                 }
             case "--json":
                 json = true
+                format = .json
+            case "--format":
+                if i + 1 < arguments.count {
+                    if let f = OutputFormat(rawValue: arguments[i + 1]) {
+                        format = f
+                    }
+                    i += 1
+                }
             default:
                 break
             }
             i += 1
         }
 
-        return (buildId, limit, pattern, projectId, workspacePath, targetName, json)
+        return (buildId, limit, pattern, projectId, workspacePath, targetName, json, format)
     }
 
     private static func output<T: Encodable>(_ value: T, json: Bool) {
@@ -194,6 +219,22 @@ public enum BuildTraceCLI {
             }
         } else {
             print(String(describing: value))
+        }
+    }
+
+    private static func outputWithFormat<T: Encodable>(_ value: T, format: OutputFormat) {
+        switch format {
+        case .json:
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
+                print(string)
+            }
+        case .toon:
+            let encoder = TOONEncoder()
+            if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
+                print(string)
+            }
         }
     }
 
@@ -570,6 +611,89 @@ public enum BuildTraceCLI {
                     print()
                 }
             }
+        }
+        return true
+    }
+
+    // MARK: - Build graph commands
+
+    private static func handleGraph(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+        let options = parseOptions(arguments)
+
+        guard let graph = db.queryBuildGraph(buildId: options.buildId) else {
+            print("No build graph data found")
+            print("\nProduct type and linking information is recorded during builds.")
+            print("Make sure you have run at least one build with tracing enabled.")
+            return true
+        }
+
+        if graph.targets.isEmpty {
+            print("No targets with product information found")
+            print("\nThis feature requires product type data to be recorded during builds.")
+            return true
+        }
+
+        outputWithFormat(graph, format: options.format)
+        return true
+    }
+
+    private static func handleDeps(arguments: [String]) -> Bool {
+        guard let db = openDatabase() else { return true }
+
+        // Parse the deps subcommand:
+        // deps graph                  -> full graph (alias for trace graph)
+        // deps callers <target>       -> what links this target
+        // deps <target>               -> what does this target link
+        guard !arguments.isEmpty else {
+            print("Usage: trace deps <target> | trace deps callers <target> | trace deps graph")
+            return true
+        }
+
+        let subcommand = arguments[0]
+
+        if subcommand == "graph" {
+            // Alias for trace graph
+            return handleGraph(arguments: Array(arguments.dropFirst()))
+        }
+
+        if subcommand == "callers" {
+            // deps callers <target>
+            guard arguments.count >= 2 else {
+                print("Usage: trace deps callers <target>")
+                return true
+            }
+            let targetName = arguments[1]
+            let remainingArgs = Array(arguments.dropFirst(2))
+            let options = parseOptions(remainingArgs)
+
+            guard let result = db.queryTargetCallers(buildId: options.buildId, targetName: targetName) else {
+                print("Target '\(targetName)' not found in build")
+                return true
+            }
+
+            if result.callers.isEmpty {
+                print("No targets link '\(targetName)'")
+            } else {
+                outputWithFormat(result, format: options.format)
+            }
+            return true
+        }
+
+        // deps <target> -> what does this target link
+        let targetName = subcommand
+        let remainingArgs = Array(arguments.dropFirst())
+        let options = parseOptions(remainingArgs)
+
+        guard let result = db.queryTargetDeps(buildId: options.buildId, targetName: targetName) else {
+            print("Target '\(targetName)' not found in build")
+            return true
+        }
+
+        if result.dependencies.isEmpty {
+            print("Target '\(targetName)' has no linked dependencies")
+        } else {
+            outputWithFormat(result, format: options.format)
         }
         return true
     }
