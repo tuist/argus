@@ -288,16 +288,28 @@ final class BuildTraceDatabase: @unchecked Sendable {
         if currentVersion < 5 {
             // Migration to version 5: Add product info columns to build_targets and linked_dependencies table
             // These track product type information and linking relationships for AI agent optimization analysis.
-            try? execute("ALTER TABLE build_targets ADD COLUMN product_type TEXT")
-            try? execute("ALTER TABLE build_targets ADD COLUMN artifact_kind TEXT")
-            try? execute("ALTER TABLE build_targets ADD COLUMN mach_o_type TEXT")
-            try? execute("ALTER TABLE build_targets ADD COLUMN is_wrapper INTEGER DEFAULT 0")
-            try? execute("ALTER TABLE build_targets ADD COLUMN product_path TEXT")
-            try execute("CREATE INDEX IF NOT EXISTS idx_build_targets_artifact_kind ON build_targets(artifact_kind)")
-            try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id)")
-            try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid)")
-            try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind)")
+            addColumnIfNotExists(table: "build_targets", column: "product_type", type: "TEXT")
+            addColumnIfNotExists(table: "build_targets", column: "artifact_kind", type: "TEXT")
+            addColumnIfNotExists(table: "build_targets", column: "mach_o_type", type: "TEXT")
+            addColumnIfNotExists(table: "build_targets", column: "is_wrapper", type: "INTEGER", defaultValue: "0")
+            addColumnIfNotExists(table: "build_targets", column: "product_path", type: "TEXT")
         }
+
+        // Repair step: Ensure columns exist even if schema version is already 5
+        // This handles cases where migrations partially failed or were interrupted
+        addColumnIfNotExists(table: "build_targets", column: "product_type", type: "TEXT")
+        addColumnIfNotExists(table: "build_targets", column: "artifact_kind", type: "TEXT")
+        addColumnIfNotExists(table: "build_targets", column: "mach_o_type", type: "TEXT")
+        addColumnIfNotExists(table: "build_targets", column: "is_wrapper", type: "INTEGER", defaultValue: "0")
+        addColumnIfNotExists(table: "build_targets", column: "product_path", type: "TEXT")
+
+        // Create indexes only if columns exist (to avoid errors)
+        if columnExists(table: "build_targets", column: "artifact_kind") {
+            try? execute("CREATE INDEX IF NOT EXISTS idx_build_targets_artifact_kind ON build_targets(artifact_kind)")
+        }
+        try? execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id)")
+        try? execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid)")
+        try? execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind)")
 
         // Update schema version
         try setSchemaVersion(Self.schemaVersion)
@@ -311,6 +323,34 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
         guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
         return Int(sqlite3_column_int(statement, 0))
+    }
+
+    /// Checks if a column exists in a table.
+    private func columnExists(table: String, column: String) -> Bool {
+        var statement: OpaquePointer?
+        let sql = "PRAGMA table_info(\(table))"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(statement) }
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let namePtr = sqlite3_column_text(statement, 1) {
+                let name = String(cString: namePtr)
+                if name == column {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Adds a column to a table if it doesn't already exist.
+    private func addColumnIfNotExists(table: String, column: String, type: String, defaultValue: String? = nil) {
+        guard !columnExists(table: table, column: column) else { return }
+        var sql = "ALTER TABLE \(table) ADD COLUMN \(column) \(type)"
+        if let defaultValue = defaultValue {
+            sql += " DEFAULT \(defaultValue)"
+        }
+        try? execute(sql)
     }
 
     private func setSchemaVersion(_ version: Int) throws {
