@@ -285,28 +285,20 @@ final class BuildTraceDatabase: @unchecked Sendable {
             try? execute("ALTER TABLE target_dependencies ADD COLUMN depends_on_name TEXT")
         }
 
-        if currentVersion < 5 {
-            // Migration to version 5: Add product info columns to build_targets and linked_dependencies table
-            // These track product type information and linking relationships for AI agent optimization analysis.
-            addColumnIfNotExists(table: "build_targets", column: "product_type", type: "TEXT")
-            addColumnIfNotExists(table: "build_targets", column: "artifact_kind", type: "TEXT")
-            addColumnIfNotExists(table: "build_targets", column: "mach_o_type", type: "TEXT")
-            addColumnIfNotExists(table: "build_targets", column: "is_wrapper", type: "INTEGER", defaultValue: "0")
-            addColumnIfNotExists(table: "build_targets", column: "product_path", type: "TEXT")
-        }
-
-        // Repair step: Ensure columns exist even if schema version is already 5
-        // This handles cases where migrations partially failed or were interrupted
+        // Migration to version 5: Add product info columns to build_targets and linked_dependencies table.
+        // These track product type information and linking relationships for AI agent optimization analysis.
+        //
+        // Note: We always run addColumnIfNotExists() regardless of schema version because during development,
+        // schema version 5 was initially implemented with a separate target_products table, then refactored
+        // to merge columns into build_targets. This ensures databases from both development versions work correctly.
         addColumnIfNotExists(table: "build_targets", column: "product_type", type: "TEXT")
         addColumnIfNotExists(table: "build_targets", column: "artifact_kind", type: "TEXT")
         addColumnIfNotExists(table: "build_targets", column: "mach_o_type", type: "TEXT")
         addColumnIfNotExists(table: "build_targets", column: "is_wrapper", type: "INTEGER", defaultValue: "0")
         addColumnIfNotExists(table: "build_targets", column: "product_path", type: "TEXT")
 
-        // Create indexes only if columns exist (to avoid errors)
-        if columnExists(table: "build_targets", column: "artifact_kind") {
-            try? execute("CREATE INDEX IF NOT EXISTS idx_build_targets_artifact_kind ON build_targets(artifact_kind)")
-        }
+        // Create indexes for the new columns and linked_dependencies table
+        try? execute("CREATE INDEX IF NOT EXISTS idx_build_targets_artifact_kind ON build_targets(artifact_kind)")
         try? execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id)")
         try? execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid)")
         try? execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind)")
