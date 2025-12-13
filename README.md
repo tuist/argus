@@ -112,6 +112,68 @@ This helps you:
 
 > **Note:** The detection works with both Xcode project dependencies and Swift Package dependencies declared in `Package.swift` manifests.
 
+## Build Graph Analysis
+
+Argus can query your build's dependency graph to understand target relationships and linking information. This is useful for AI agents to make optimization recommendations for binary size and startup time.
+
+```bash
+# Full dependency graph with all targets and their linking info
+argus trace graph --build latest
+
+# What does MyApp depend on? (transitive dependencies by default)
+argus trace graph --source MyApp
+
+# Only direct dependencies (not transitive)
+argus trace graph --source MyApp --direct
+
+# What depends on CoreKit? (reverse dependency lookup)
+argus trace graph --sink CoreKit
+
+# Find the dependency path between two targets
+argus trace graph --source MyApp --sink CoreKit
+
+# Filter by dependency type
+argus trace graph --source MyApp --label package      # Swift packages only
+argus trace graph --source MyApp --label framework    # Frameworks only
+argus trace graph --source MyApp --label sdk          # System SDKs only
+
+# Control output fields
+argus trace graph --source MyApp --fields name,type,linking
+
+# Output formats: json (default) or toon (token-efficient for LLMs)
+argus trace graph --source MyApp --format toon
+```
+
+### Example Output
+
+```json
+{
+  "source": "MyApp",
+  "dependencies": [
+    { "name": "NetworkingKit", "path": "...", "kind": "dynamic", "mode": "normal", "isSystem": false },
+    { "name": "CoreUtilities", "path": "...", "kind": "static", "mode": "normal", "isSystem": false },
+    { "name": "Foundation", "path": "...", "kind": "dynamic", "mode": "normal", "isSystem": true }
+  ]
+}
+```
+
+### Linking Modes
+
+The graph shows how each dependency is linked:
+
+| Kind | Description |
+|------|-------------|
+| `static` | Statically linked library |
+| `dynamic` | Dynamically linked library |
+| `framework` | Framework bundle |
+
+| Mode | Description |
+|------|-------------|
+| `normal` | Standard linking |
+| `weak` | Weak linking (optional at runtime) |
+| `reexport` | Re-exported symbols |
+| `merge` | Merged into the binary |
+
 ## License
 
 See https://swift.org/LICENSE.txt for license information.
