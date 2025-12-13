@@ -13,199 +13,143 @@
 // Build tracing is only available on Apple platforms where SQLite3 is available
 #if canImport(SQLite3)
 
+public import ArgumentParser
 import Foundation
+import ToonFormat
 
-/// CLI for querying build trace data.
-///
-/// Usage: SWBBuildService trace <command> [options]
-public enum BuildTraceCLI {
-    /// The default path for the build trace database.
-    private static let defaultPath: String = {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/Library/Developer/Xcode/BuildTraces/traces.db"
-    }()
+// MARK: - Output Format
 
-    /// Runs the trace CLI with the given arguments.
-    ///
-    /// - Parameter arguments: Command line arguments (excluding "trace").
-    /// - Returns: `true` if the command was handled, `false` otherwise.
-    public static func run(arguments: [String]) -> Bool {
-        guard !arguments.isEmpty else {
-            printUsage()
-            return true
-        }
+enum OutputFormat: String, ExpressibleByArgument, CaseIterable {
+    case json
+    case toon
+}
 
-        let command = arguments[0]
-        let remainingArgs = Array(arguments.dropFirst())
+// MARK: - Dependency Labels
 
-        switch command {
-        case "summary":
-            return handleSummary(arguments: remainingArgs)
-        case "errors":
-            return handleErrors(arguments: remainingArgs)
-        case "warnings":
-            return handleWarnings(arguments: remainingArgs)
-        case "slowest-targets":
-            return handleSlowestTargets(arguments: remainingArgs)
-        case "slowest-tasks":
-            return handleSlowestTasks(arguments: remainingArgs)
-        case "bottlenecks":
-            return handleBottlenecks(arguments: remainingArgs)
-        case "critical-path":
-            return handleCriticalPath(arguments: remainingArgs)
-        case "search-errors":
-            return handleSearchErrors(arguments: remainingArgs)
-        case "projects":
-            return handleProjects(arguments: remainingArgs)
-        case "builds":
-            return handleBuilds(arguments: remainingArgs)
-        case "imports":
-            return handleImports(arguments: remainingArgs)
-        case "implicit-deps":
-            return handleImplicitDeps(arguments: remainingArgs)
-        case "redundant-deps":
-            return handleRedundantDeps(arguments: remainingArgs)
-        case "help", "--help", "-h":
-            printUsage()
-            return true
-        default:
-            print("Unknown command: \(command)")
-            printUsage()
-            return true
-        }
+enum DependencyLabel: String, ExpressibleByArgument, CaseIterable {
+    case target
+    case package
+    case framework
+    case xcframework
+    case sdk
+    case bundle
+}
+
+// MARK: - Graph Fields
+
+enum GraphField: String, ExpressibleByArgument, CaseIterable {
+    case name
+    case type
+    case linking
+    case status
+    case path
+    case platform
+    case product
+}
+
+// MARK: - Common Options
+
+struct CommonOptions: ParsableArguments {
+    @Option(name: .long, help: "Build ID or 'latest'")
+    var build: String = "latest"
+
+    @Option(name: .long, help: "Limit results")
+    var limit: Int = 10
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    @Option(name: .long, help: "Output format")
+    var format: OutputFormat = .json
+}
+
+// MARK: - Database Helper
+
+private let defaultDatabasePath: String = {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return "\(home)/Library/Developer/Xcode/BuildTraces/traces.db"
+}()
+
+private func openDatabase() -> BuildTraceDatabase? {
+    do {
+        return try BuildTraceDatabase(path: defaultDatabasePath)
+    } catch {
+        print("Error: Could not open build trace database at \(defaultDatabasePath)")
+        print("Make sure you have run at least one build with tracing enabled.")
+        return nil
     }
+}
 
-    private static func printUsage() {
-        print("""
-        Usage: SWBBuildService trace <command> [options]
-
-        Commands:
-          summary             Show build summary
-          errors              Show build errors
-          warnings            Show build warnings
-          slowest-targets     Show slowest targets
-          slowest-tasks       Show slowest tasks
-          bottlenecks         Show parallelization bottlenecks
-          critical-path       Show critical path through build
-          search-errors       Search for errors matching a pattern
-          projects            List all projects with build history
-          builds              List builds for a project
-          imports             Show imports per target (requires import scanning)
-          implicit-deps       Show implicit dependencies (imported but not declared)
-          redundant-deps      Show redundant dependencies (declared but not imported)
-
-        Options:
-          --build <id>        Build ID or "latest" (default: latest)
-          --limit <n>         Limit results (default: 10)
-          --pattern <text>    Search pattern (for search-errors)
-          --project <id>      Filter by project ID
-          --workspace <path>  Filter by workspace path
-          --target <name>     Filter by target name (for imports command)
-          --json              Output as JSON
-
-        Environment Variables (set when running xcodebuild):
-          SWB_BUILD_TRACE_ID         Custom build identifier
-          SWB_BUILD_PROJECT_ID       Project identifier for grouping builds
-          SWB_BUILD_WORKSPACE_PATH   Workspace path for grouping builds
-          SWB_BUILD_TRACE_IMPORTS=0  Disable import scanning (for performance)
-
-        Examples:
-          SWBBuildService trace summary --build latest
-          SWBBuildService trace errors --build latest
-          SWBBuildService trace slowest-targets --limit 5
-          SWBBuildService trace search-errors --pattern "linker"
-          SWBBuildService trace projects
-          SWBBuildService trace builds --project my-project --limit 10
-          SWBBuildService trace imports --build latest
-          SWBBuildService trace implicit-deps --build latest
-          SWBBuildService trace redundant-deps --build latest
-        """)
+private func output<T: Encodable>(_ value: T, json: Bool) {
+    if json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
+            print(string)
+        }
+    } else {
+        print(String(describing: value))
     }
+}
 
-    private static func openDatabase() -> BuildTraceDatabase? {
-        do {
-            return try BuildTraceDatabase(path: defaultPath)
-        } catch {
-            print("Error: Could not open build trace database at \(defaultPath)")
-            print("Make sure you have run at least one build with tracing enabled.")
-            return nil
+private func outputWithFormat<T: Encodable>(_ value: T, format: OutputFormat) {
+    switch format {
+    case .json:
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
+            print(string)
+        }
+    case .toon:
+        let encoder = TOONEncoder()
+        if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
+            print(string)
         }
     }
+}
 
-    private static func parseOptions(_ arguments: [String]) -> (buildId: String, limit: Int, pattern: String?, projectId: String?, workspacePath: String?, targetName: String?, json: Bool) {
-        var buildId = "latest"
-        var limit = 10
-        var pattern: String? = nil
-        var projectId: String? = nil
-        var workspacePath: String? = nil
-        var targetName: String? = nil
-        var json = false
+// MARK: - Main Command
 
-        var i = 0
-        while i < arguments.count {
-            switch arguments[i] {
-            case "--build":
-                if i + 1 < arguments.count {
-                    buildId = arguments[i + 1]
-                    i += 1
-                }
-            case "--limit":
-                if i + 1 < arguments.count, let n = Int(arguments[i + 1]) {
-                    limit = n
-                    i += 1
-                }
-            case "--pattern":
-                if i + 1 < arguments.count {
-                    pattern = arguments[i + 1]
-                    i += 1
-                }
-            case "--project":
-                if i + 1 < arguments.count {
-                    projectId = arguments[i + 1]
-                    i += 1
-                }
-            case "--workspace":
-                if i + 1 < arguments.count {
-                    workspacePath = arguments[i + 1]
-                    i += 1
-                }
-            case "--target":
-                if i + 1 < arguments.count {
-                    targetName = arguments[i + 1]
-                    i += 1
-                }
-            case "--json":
-                json = true
-            default:
-                break
-            }
-            i += 1
-        }
+public struct TraceCommand: ParsableCommand {
+    public static let configuration = CommandConfiguration(
+        commandName: "trace",
+        abstract: "Query build trace data",
+        subcommands: [
+            Summary.self,
+            Errors.self,
+            Warnings.self,
+            SlowestTargets.self,
+            SlowestTasks.self,
+            Bottlenecks.self,
+            CriticalPath.self,
+            SearchErrors.self,
+            Projects.self,
+            Builds.self,
+            Imports.self,
+            ImplicitDeps.self,
+            RedundantDeps.self,
+            Graph.self,
+        ]
+    )
 
-        return (buildId, limit, pattern, projectId, workspacePath, targetName, json)
-    }
+    public init() {}
+}
 
-    private static func output<T: Encodable>(_ value: T, json: Bool) {
-        if json {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
-                print(string)
-            }
-        } else {
-            print(String(describing: value))
-        }
-    }
+// MARK: - Summary Command
 
-    // MARK: - Command handlers
+struct Summary: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show build summary"
+    )
 
-    private static func handleSummary(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
+    @OptionGroup var options: CommonOptions
 
-        guard let summary = db.queryBuildSummary(buildId: options.buildId) else {
+    func run() throws {
+        guard let db = openDatabase() else { return }
+
+        guard let summary = db.queryBuildSummary(buildId: options.build) else {
             print("No build found")
-            return true
+            return
         }
 
         if options.json {
@@ -228,13 +172,21 @@ public enum BuildTraceCLI {
                 print("Cache hits:    \(summary.cacheHitCount)/\(totalTasks) (\(String(format: "%.1f", hitRate))%)")
             }
         }
-        return true
     }
+}
 
-    private static func handleErrors(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let errors = db.queryErrors(buildId: options.buildId)
+// MARK: - Errors Command
+
+struct Errors: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show build errors"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let errors = db.queryErrors(buildId: options.build)
 
         if options.json {
             output(errors, json: true)
@@ -253,13 +205,21 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleWarnings(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let warnings = db.queryWarnings(buildId: options.buildId)
+// MARK: - Warnings Command
+
+struct Warnings: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show build warnings"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let warnings = db.queryWarnings(buildId: options.build)
 
         if options.json {
             output(warnings, json: true)
@@ -278,13 +238,22 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleSlowestTargets(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let targets = db.querySlowestTargets(buildId: options.buildId, limit: options.limit)
+// MARK: - Slowest Targets Command
+
+struct SlowestTargets: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "slowest-targets",
+        abstract: "Show slowest targets"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let targets = db.querySlowestTargets(buildId: options.build, limit: options.limit)
 
         if options.json {
             output(targets, json: true)
@@ -300,13 +269,22 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleSlowestTasks(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let tasks = db.querySlowestTasks(buildId: options.buildId, limit: options.limit)
+// MARK: - Slowest Tasks Command
+
+struct SlowestTasks: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "slowest-tasks",
+        abstract: "Show slowest tasks"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let tasks = db.querySlowestTasks(buildId: options.build, limit: options.limit)
 
         if options.json {
             output(tasks, json: true)
@@ -327,13 +305,21 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleBottlenecks(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let bottlenecks = db.queryBottlenecks(buildId: options.buildId)
+// MARK: - Bottlenecks Command
+
+struct Bottlenecks: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show parallelization bottlenecks"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let bottlenecks = db.queryBottlenecks(buildId: options.build)
 
         if options.json {
             output(bottlenecks, json: true)
@@ -351,13 +337,22 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleCriticalPath(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let path = db.queryCriticalPath(buildId: options.buildId)
+// MARK: - Critical Path Command
+
+struct CriticalPath: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "critical-path",
+        abstract: "Show critical path through build"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let path = db.queryCriticalPath(buildId: options.build)
 
         if options.json {
             output(path, json: true)
@@ -377,18 +372,24 @@ public enum BuildTraceCLI {
                 print("\nTotal critical path duration: \(String(format: "%.2f", totalDuration))s")
             }
         }
-        return true
     }
+}
 
-    private static func handleSearchErrors(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
+// MARK: - Search Errors Command
 
-        guard let pattern = options.pattern else {
-            print("Error: --pattern is required for search-errors")
-            return true
-        }
+struct SearchErrors: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "search-errors",
+        abstract: "Search for errors matching a pattern"
+    )
 
+    @OptionGroup var options: CommonOptions
+
+    @Option(name: .long, help: "Search pattern")
+    var pattern: String
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
         let results = db.searchErrors(pattern: pattern)
 
         if options.json {
@@ -398,7 +399,7 @@ public enum BuildTraceCLI {
                 print("No errors matching '\(pattern)' found")
             } else {
                 print("Errors matching '\(pattern)' (\(results.count) found)")
-                print("=".repeated(40))
+                print(String(repeating: "=", count: 40))
                 for result in results {
                     print("\nBuild: \(result.buildId) (\(result.buildStartedAt))")
                     if let path = result.filePath, let line = result.line {
@@ -408,12 +409,20 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleProjects(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
+// MARK: - Projects Command
+
+struct Projects: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "List all projects with build history"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
         let projects = db.queryProjects()
 
         if options.json {
@@ -443,22 +452,36 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleBuilds(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
+// MARK: - Builds Command
 
-        if options.projectId == nil && options.workspacePath == nil {
+struct Builds: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "List builds for a project"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    @Option(name: .long, help: "Filter by project ID")
+    var project: String?
+
+    @Option(name: .long, help: "Filter by workspace path")
+    var workspace: String?
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+
+        if project == nil && workspace == nil {
             print("Error: --project or --workspace is required for builds command")
-            print("Use 'argus trace projects' to list available projects")
-            return true
+            print("Use 'trace projects' to list available projects")
+            return
         }
 
         let builds = db.queryBuildsForProject(
-            projectId: options.projectId,
-            workspacePath: options.workspacePath,
+            projectId: project,
+            workspacePath: workspace,
             limit: options.limit
         )
 
@@ -468,9 +491,9 @@ public enum BuildTraceCLI {
             if builds.isEmpty {
                 print("No builds found for the specified project")
             } else {
-                let projectName = options.projectId ?? options.workspacePath ?? "Unknown"
+                let projectName = project ?? workspace ?? "Unknown"
                 print("Builds for \(projectName)")
-                print("=".repeated(40))
+                print(String(repeating: "=", count: 40))
                 for build in builds {
                     let status = build.status ?? "in progress"
                     let duration = build.durationSeconds.map { String(format: "%.2fs", $0) } ?? "-"
@@ -488,15 +511,24 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    // MARK: - Import analysis commands
+// MARK: - Imports Command
 
-    private static func handleImports(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let imports = db.queryTargetImports(buildId: options.buildId, targetName: options.targetName)
+struct Imports: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show imports per target"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    @Option(name: .long, help: "Filter by target name")
+    var target: String?
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let imports = db.queryTargetImports(buildId: options.build, targetName: target)
 
         if options.json {
             output(imports, json: true)
@@ -516,13 +548,22 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleImplicitDeps(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let implicitDeps = db.queryImplicitDependencies(buildId: options.buildId)
+// MARK: - Implicit Deps Command
+
+struct ImplicitDeps: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "implicit-deps",
+        abstract: "Show implicit dependencies (imported but not declared)"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let implicitDeps = db.queryImplicitDependencies(buildId: options.build)
 
         if options.json {
             output(implicitDeps, json: true)
@@ -546,13 +587,22 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
+}
 
-    private static func handleRedundantDeps(arguments: [String]) -> Bool {
-        guard let db = openDatabase() else { return true }
-        let options = parseOptions(arguments)
-        let redundantDeps = db.queryRedundantDependencies(buildId: options.buildId)
+// MARK: - Redundant Deps Command
+
+struct RedundantDeps: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "redundant-deps",
+        abstract: "Show redundant dependencies (declared but not imported)"
+    )
+
+    @OptionGroup var options: CommonOptions
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+        let redundantDeps = db.queryRedundantDependencies(buildId: options.build)
 
         if options.json {
             output(redundantDeps, json: true)
@@ -571,13 +621,143 @@ public enum BuildTraceCLI {
                 }
             }
         }
-        return true
     }
 }
 
-private extension String {
-    func repeated(_ count: Int) -> String {
-        String(repeating: self, count: count)
+// MARK: - Graph Command
+
+struct Graph: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Query build graph with targets and linking info",
+        discussion: """
+        Query the build dependency graph using Tuist-style options inspired by Mix xref.
+
+        Examples:
+          trace graph                                    # Full graph
+          trace graph --source MyApp                     # All deps of MyApp (transitive)
+          trace graph --source MyApp --direct            # Only direct deps of MyApp
+          trace graph --sink CoreKit                     # What depends on CoreKit?
+          trace graph --source MyApp --label package     # MyApp's package dependencies
+          trace graph --source MyApp --sink CoreKit      # Path between targets
+        """
+    )
+
+    @Option(name: .long, help: "Build ID or 'latest'")
+    var build: String = "latest"
+
+    @Option(name: .long, help: "What does this target depend on?")
+    var source: String?
+
+    @Option(name: .long, help: "What depends on this target?")
+    var sink: String?
+
+    @Flag(name: .long, help: "Show only direct dependencies (not transitive)")
+    var direct: Bool = false
+
+    @Option(name: .long, parsing: .upToNextOption, help: "Filter by dependency type")
+    var label: [DependencyLabel] = []
+
+    @Option(name: .long, help: "Control output projection (comma-separated)")
+    var fields: String?
+
+    @Option(name: .long, help: "Output format")
+    var format: OutputFormat = .json
+
+    func run() throws {
+        guard let db = openDatabase() else { return }
+
+        let parsedFields = fields?.split(separator: ",").compactMap { GraphField(rawValue: String($0)) } ?? []
+
+        // Determine query mode based on options
+        if let source = source, let sink = sink {
+            // Path between two targets
+            guard let path = db.queryGraphPath(
+                buildId: build,
+                source: source,
+                sink: sink,
+                labels: label.map { $0.rawValue },
+                fields: parsedFields.map { $0.rawValue }
+            ) else {
+                print("No path found between '\(source)' and '\(sink)'")
+                return
+            }
+            outputWithFormat(path, format: format)
+
+        } else if let source = source {
+            // What does this target depend on? (--source)
+            guard let result = db.queryGraphSource(
+                buildId: build,
+                source: source,
+                labels: label.map { $0.rawValue },
+                fields: parsedFields.map { $0.rawValue },
+                directOnly: direct
+            ) else {
+                print("Target '\(source)' not found in build")
+                return
+            }
+            if result.dependencies.isEmpty {
+                let depType = direct ? "direct dependencies" : "dependencies"
+                print("Target '\(source)' has no \(depType)")
+            } else {
+                outputWithFormat(result, format: format)
+            }
+
+        } else if let sink = sink {
+            // What depends on this target? (--sink)
+            guard let result = db.queryGraphSink(
+                buildId: build,
+                sink: sink,
+                labels: label.map { $0.rawValue },
+                fields: parsedFields.map { $0.rawValue },
+                directOnly: direct
+            ) else {
+                print("Target '\(sink)' not found in build")
+                return
+            }
+            if result.dependents.isEmpty {
+                let depType = direct ? "direct dependents" : "dependents"
+                print("No targets are \(depType) of '\(sink)'")
+            } else {
+                outputWithFormat(result, format: format)
+            }
+
+        } else {
+            // Full graph
+            guard let graph = db.queryBuildGraph(
+                buildId: build,
+                labels: label.map { $0.rawValue },
+                fields: parsedFields.map { $0.rawValue }
+            ) else {
+                print("No build graph data found")
+                print("\nProduct type and linking information is recorded during builds.")
+                print("Make sure you have run at least one build with tracing enabled.")
+                return
+            }
+
+            if graph.targets.isEmpty {
+                print("No targets with product information found")
+                print("\nThis feature requires product type data to be recorded during builds.")
+                return
+            }
+
+            outputWithFormat(graph, format: format)
+        }
+    }
+}
+
+// MARK: - Legacy Entry Point
+
+/// Legacy entry point for backwards compatibility.
+/// Prefer using TraceCommand.main() directly.
+public enum BuildTraceCLI {
+    public static func run(arguments: [String]) -> Bool {
+        do {
+            var command = try TraceCommand.parseAsRoot(arguments)
+            try command.run()
+            return true
+        } catch {
+            TraceCommand.exit(withError: error)
+        }
     }
 }
 

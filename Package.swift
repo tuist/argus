@@ -187,7 +187,11 @@ let package = Package(
             swiftSettings: swiftSettings(languageMode: .v6)),
         .target(
             name: "SWBServiceCore",
-            dependencies: ["SWBProtocol"],
+            dependencies: [
+                "SWBProtocol",
+                .product(name: "ToonFormat", package: "toon-swift"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
             exclude: ["CMakeLists.txt"],
             swiftSettings: swiftSettings(languageMode: .v6)),
         .target(
@@ -465,6 +469,7 @@ if useLocalDependencies {
         .package(path: "../swift-driver"),
         .package(path: "../swift-system"),
         .package(path: "../swift-argument-parser"),
+        .package(url: "https://github.com/toon-format/toon-swift.git", from: "0.3.0"),
     ]
     if !useLLBuildFramework {
         package.dependencies +=  [.package(path: "../llbuild"),]
@@ -474,6 +479,7 @@ if useLocalDependencies {
         .package(url: "https://github.com/swiftlang/swift-driver.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-system.git", .upToNextMajor(from: "1.5.0")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.0.3"),
+        .package(url: "https://github.com/toon-format/toon-swift.git", from: "0.3.0"),
     ]
     if !useLLBuildFramework {
         package.dependencies += [.package(url: "https://github.com/swiftlang/swift-llbuild.git", branch: "main"),]
