@@ -33,11 +33,15 @@ struct BuildTraceGraphTests {
         // Insert a build
         db.insertBuild(buildId: buildId, internalBuildId: 1, startedAt: Date())
 
-        // Insert target products
-        db.insertTargetProduct(
+        // Insert targets with product info
+        db.insertTargetWithProductInfo(
             buildId: buildId,
-            targetGuid: "guid-myapp",
-            targetName: "MyApp",
+            targetId: 1,
+            guid: "guid-myapp",
+            name: "MyApp",
+            projectName: nil,
+            configurationName: nil,
+            startedAt: Date(),
             productType: "com.apple.product-type.application",
             artifactKind: "executable",
             machOType: "mh_execute",
@@ -45,10 +49,14 @@ struct BuildTraceGraphTests {
             productPath: "/Build/Products/Debug/MyApp.app"
         )
 
-        db.insertTargetProduct(
+        db.insertTargetWithProductInfo(
             buildId: buildId,
-            targetGuid: "guid-corekit",
-            targetName: "CoreKit",
+            targetId: 2,
+            guid: "guid-corekit",
+            name: "CoreKit",
+            projectName: nil,
+            configurationName: nil,
+            startedAt: Date(),
             productType: "com.apple.product-type.framework",
             artifactKind: "dynamicLibrary",
             machOType: "mh_dylib",
@@ -56,10 +64,14 @@ struct BuildTraceGraphTests {
             productPath: "/Build/Products/Debug/CoreKit.framework"
         )
 
-        db.insertTargetProduct(
+        db.insertTargetWithProductInfo(
             buildId: buildId,
-            targetGuid: "guid-utils",
-            targetName: "Utilities",
+            targetId: 3,
+            guid: "guid-utils",
+            name: "Utilities",
+            projectName: nil,
+            configurationName: nil,
+            startedAt: Date(),
             productType: "com.apple.product-type.library.static",
             artifactKind: "staticLibrary",
             machOType: "staticlib",
@@ -67,10 +79,14 @@ struct BuildTraceGraphTests {
             productPath: "/Build/Products/Debug/libUtilities.a"
         )
 
-        db.insertTargetProduct(
+        db.insertTargetWithProductInfo(
             buildId: buildId,
-            targetGuid: "guid-network",
-            targetName: "NetworkingKit",
+            targetId: 4,
+            guid: "guid-network",
+            name: "NetworkingKit",
+            projectName: nil,
+            configurationName: nil,
+            startedAt: Date(),
             productType: "com.apple.product-type.framework",
             artifactKind: "dynamicLibrary",
             machOType: "mh_dylib",

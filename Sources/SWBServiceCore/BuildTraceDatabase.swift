@@ -83,7 +83,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
             workspace_path TEXT
         );
 
-        -- Details layer: Individual targets with timing data.
+        -- Details layer: Individual targets with timing data and product info.
         CREATE TABLE IF NOT EXISTS build_targets (
             id INTEGER PRIMARY KEY,
             build_id TEXT NOT NULL,
@@ -97,6 +97,12 @@ final class BuildTraceDatabase: @unchecked Sendable {
             duration_seconds REAL,
             task_count INTEGER DEFAULT 0,
             status TEXT,
+            -- Product info (populated when available)
+            product_type TEXT,
+            artifact_kind TEXT,
+            mach_o_type TEXT,
+            is_wrapper INTEGER DEFAULT 0,
+            product_path TEXT,
             FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
@@ -169,20 +175,6 @@ final class BuildTraceDatabase: @unchecked Sendable {
             FOREIGN KEY (build_id) REFERENCES builds(id)
         );
 
-        -- Target products: Product type and artifact information per target.
-        CREATE TABLE IF NOT EXISTS target_products (
-            id INTEGER PRIMARY KEY,
-            build_id TEXT NOT NULL,
-            target_guid TEXT NOT NULL,
-            target_name TEXT NOT NULL,
-            product_type TEXT,
-            artifact_kind TEXT,
-            mach_o_type TEXT,
-            is_wrapper INTEGER DEFAULT 0,
-            product_path TEXT,
-            FOREIGN KEY (build_id) REFERENCES builds(id)
-        );
-
         -- Linked dependencies: What each target links and how.
         CREATE TABLE IF NOT EXISTS linked_dependencies (
             id INTEGER PRIMARY KEY,
@@ -212,9 +204,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_source_imports_build_id ON source_imports(build_id);
         CREATE INDEX IF NOT EXISTS idx_source_imports_target ON source_imports(build_id, target_name);
         CREATE INDEX IF NOT EXISTS idx_source_imports_module ON source_imports(build_id, imported_module);
-        CREATE INDEX IF NOT EXISTS idx_target_products_build ON target_products(build_id);
-        CREATE INDEX IF NOT EXISTS idx_target_products_kind ON target_products(artifact_kind);
-        CREATE INDEX IF NOT EXISTS idx_target_products_guid ON target_products(target_guid);
+        CREATE INDEX IF NOT EXISTS idx_build_targets_artifact_kind ON build_targets(artifact_kind);
         CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id);
         CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid);
         CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind);
@@ -296,14 +286,14 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
 
         if currentVersion < 5 {
-            // Migration to version 5: Add target_products and linked_dependencies tables
-            // These tables track product type information and linking relationships for
-            // AI agent optimization analysis.
-            // Tables are created via CREATE TABLE IF NOT EXISTS in createTables(),
-            // so we just need to ensure the indexes exist.
-            try execute("CREATE INDEX IF NOT EXISTS idx_target_products_build ON target_products(build_id)")
-            try execute("CREATE INDEX IF NOT EXISTS idx_target_products_kind ON target_products(artifact_kind)")
-            try execute("CREATE INDEX IF NOT EXISTS idx_target_products_guid ON target_products(target_guid)")
+            // Migration to version 5: Add product info columns to build_targets and linked_dependencies table
+            // These track product type information and linking relationships for AI agent optimization analysis.
+            try? execute("ALTER TABLE build_targets ADD COLUMN product_type TEXT")
+            try? execute("ALTER TABLE build_targets ADD COLUMN artifact_kind TEXT")
+            try? execute("ALTER TABLE build_targets ADD COLUMN mach_o_type TEXT")
+            try? execute("ALTER TABLE build_targets ADD COLUMN is_wrapper INTEGER DEFAULT 0")
+            try? execute("ALTER TABLE build_targets ADD COLUMN product_path TEXT")
+            try execute("CREATE INDEX IF NOT EXISTS idx_build_targets_artifact_kind ON build_targets(artifact_kind)")
             try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_build ON linked_dependencies(build_id)")
             try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_target ON linked_dependencies(target_guid)")
             try execute("CREATE INDEX IF NOT EXISTS idx_linked_deps_kind ON linked_dependencies(link_kind)")
@@ -519,10 +509,40 @@ final class BuildTraceDatabase: @unchecked Sendable {
         }
     }
 
-    func insertTargetProduct(
+    func updateTargetProductInfo(
         buildId: String,
         targetGuid: String,
-        targetName: String,
+        productType: String?,
+        artifactKind: String?,
+        machOType: String?,
+        isWrapper: Bool,
+        productPath: String?
+    ) {
+        queue.async { [weak self] in
+            self?.executeUpdate(
+                """
+                UPDATE build_targets SET
+                    product_type = ?,
+                    artifact_kind = ?,
+                    mach_o_type = ?,
+                    is_wrapper = ?,
+                    product_path = ?
+                WHERE build_id = ? AND guid = ?
+                """,
+                productType, artifactKind, machOType, isWrapper ? 1 : 0, productPath, buildId, targetGuid
+            )
+        }
+    }
+
+    /// Inserts a target with product info in one call (for testing or when target info is known upfront)
+    func insertTargetWithProductInfo(
+        buildId: String,
+        targetId: Int,
+        guid: String,
+        name: String,
+        projectName: String?,
+        configurationName: String?,
+        startedAt: Date,
         productType: String?,
         artifactKind: String?,
         machOType: String?,
@@ -532,10 +552,10 @@ final class BuildTraceDatabase: @unchecked Sendable {
         queue.async { [weak self] in
             self?.executeInsert(
                 """
-                INSERT INTO target_products (build_id, target_guid, target_name, product_type, artifact_kind, mach_o_type, is_wrapper, product_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO build_targets (build_id, target_id, guid, name, project_name, configuration_name, started_at, product_type, artifact_kind, mach_o_type, is_wrapper, product_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                buildId, targetGuid, targetName, productType, artifactKind, machOType, isWrapper ? 1 : 0, productPath
+                buildId, targetId, guid, name, projectName, configurationName, startedAt.iso8601String, productType, artifactKind, machOType, isWrapper ? 1 : 0, productPath
             )
         }
     }
@@ -1139,7 +1159,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
     /// Maps label strings to link_kind values in the database
     private func labelToLinkKind(_ label: String) -> String? {
         switch label {
-        case "target": return nil  // Targets are in target_products, not linked_dependencies
+        case "target": return nil  // Targets are in build_targets, not linked_dependencies
         case "package": return "static"  // Swift packages typically link statically
         case "framework": return "framework"
         case "xcframework": return "framework"  // XCFrameworks appear as frameworks
@@ -1197,11 +1217,11 @@ final class BuildTraceDatabase: @unchecked Sendable {
             let resolvedBuildId = buildId == "latest" ? queryLatestBuildId() : buildId
             guard let resolvedBuildId else { return nil }
 
-            // First, get all target products
+            // First, get all targets with their product info
             var targetsByGuid: [String: GraphTarget] = [:]
             let productsSql = """
-                SELECT target_guid, target_name, product_type, artifact_kind, mach_o_type, is_wrapper, product_path
-                FROM target_products
+                SELECT guid, name, product_type, artifact_kind, mach_o_type, is_wrapper, product_path
+                FROM build_targets
                 WHERE build_id = ?
                 """
             var productsStatement: OpaquePointer?
@@ -1294,7 +1314,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
             var guidToName: [String: String] = [:]
             var nameToGuid: [String: String] = [:]
 
-            let productsSql = "SELECT target_guid, target_name FROM target_products WHERE build_id = ?"
+            let productsSql = "SELECT guid, name FROM build_targets WHERE build_id = ?"
             var productsStatement: OpaquePointer?
             guard sqlite3_prepare_v2(db, productsSql, -1, &productsStatement, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(productsStatement) }
@@ -1389,7 +1409,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
             var guidToName: [String: String] = [:]
             var guidToArtifactKind: [String: String?] = [:]
 
-            let productsSql = "SELECT target_guid, target_name, artifact_kind FROM target_products WHERE build_id = ?"
+            let productsSql = "SELECT guid, name, artifact_kind FROM build_targets WHERE build_id = ?"
             var productsStatement: OpaquePointer?
             guard sqlite3_prepare_v2(db, productsSql, -1, &productsStatement, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(productsStatement) }
@@ -1487,7 +1507,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
             var allTargets: Set<String> = []
 
             // Load targets
-            let targetsSql = "SELECT target_name FROM target_products WHERE build_id = ?"
+            let targetsSql = "SELECT name FROM build_targets WHERE build_id = ?"
             var targetsStatement: OpaquePointer?
             guard sqlite3_prepare_v2(db, targetsSql, -1, &targetsStatement, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(targetsStatement) }
@@ -1506,9 +1526,9 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
             // Load dependencies
             let depsSql = """
-                SELECT tp.target_name, ld.dependency_name
+                SELECT bt.name, ld.dependency_name
                 FROM linked_dependencies ld
-                INNER JOIN target_products tp ON ld.build_id = tp.build_id AND ld.target_guid = tp.target_guid
+                INNER JOIN build_targets bt ON ld.build_id = bt.build_id AND ld.target_guid = bt.guid
                 WHERE ld.build_id = ? AND ld.dependency_name IS NOT NULL
                 """
             var depsStatement: OpaquePointer?
