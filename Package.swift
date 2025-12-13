@@ -190,6 +190,7 @@ let package = Package(
             dependencies: [
                 "SWBProtocol",
                 .product(name: "ToonFormat", package: "toon-swift"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["CMakeLists.txt"],
             swiftSettings: swiftSettings(languageMode: .v6)),
