@@ -1350,7 +1350,7 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 )
             }
 
-            // Then, get dependencies from target_dependencies table
+            // Then, get dependencies from target_dependencies table (graph structure)
             // Note: target_dependencies contains the build graph from DependencyGraphResponse
             let depsSql = """
                 SELECT td.target_guid, td.depends_on_guid, td.depends_on_name, bt2.product_path
@@ -1378,6 +1378,38 @@ final class BuildTraceDatabase: @unchecked Sendable {
 
                 let dep = GraphDependency(name: name, path: path, kind: kind, mode: "normal", isSystem: isSystem)
                 dependenciesByGuid[targetGuid, default: []].append(dep)
+            }
+
+            // Also get linked dependencies (from linker command parsing) for richer linking info
+            let linkedDepsSql = """
+                SELECT target_guid, dependency_path, link_kind, link_mode, dependency_name, is_system
+                FROM linked_dependencies
+                WHERE build_id = ?
+                """
+            var linkedDepsStatement: OpaquePointer?
+            if sqlite3_prepare_v2(db, linkedDepsSql, -1, &linkedDepsStatement, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(linkedDepsStatement) }
+                sqlite3_bind_text(linkedDepsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+                while sqlite3_step(linkedDepsStatement) == SQLITE_ROW {
+                    let targetGuid = String(cString: sqlite3_column_text(linkedDepsStatement, 0))
+                    let path = String(cString: sqlite3_column_text(linkedDepsStatement, 1))
+                    let kind = String(cString: sqlite3_column_text(linkedDepsStatement, 2))
+                    let mode = String(cString: sqlite3_column_text(linkedDepsStatement, 3))
+                    let name = sqlite3_column_type(linkedDepsStatement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(linkedDepsStatement, 4)) : nil
+                    let isSystem = sqlite3_column_int(linkedDepsStatement, 5) == 1
+
+                    // Only add if not already present from target_dependencies
+                    let existingDeps = dependenciesByGuid[targetGuid] ?? []
+                    let alreadyExists = existingDeps.contains { dep in
+                        (name != nil && dep.name == name) || dep.path == path
+                    }
+
+                    if !alreadyExists {
+                        let dep = GraphDependency(name: name, path: path, kind: kind, mode: mode, isSystem: isSystem)
+                        dependenciesByGuid[targetGuid, default: []].append(dep)
+                    }
+                }
             }
 
             // Combine targets with their dependencies, applying filters
@@ -1469,6 +1501,38 @@ final class BuildTraceDatabase: @unchecked Sendable {
                 let kind = guidToArtifactKind[dependsOnGuid] ?? "target"
                 let dep = GraphDependency(name: name, path: dependsOnGuid, kind: kind ?? "target", mode: "normal", isSystem: false)
                 dependencyGraph[targetGuid, default: []].append(dep)
+            }
+
+            // Also get linked dependencies for richer linking info
+            let linkedDepsSql = """
+                SELECT target_guid, dependency_path, link_kind, link_mode, dependency_name, is_system
+                FROM linked_dependencies
+                WHERE build_id = ?
+                """
+            var linkedDepsStatement: OpaquePointer?
+            if sqlite3_prepare_v2(db, linkedDepsSql, -1, &linkedDepsStatement, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(linkedDepsStatement) }
+                sqlite3_bind_text(linkedDepsStatement, 1, resolvedBuildId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+                while sqlite3_step(linkedDepsStatement) == SQLITE_ROW {
+                    let targetGuid = String(cString: sqlite3_column_text(linkedDepsStatement, 0))
+                    let path = String(cString: sqlite3_column_text(linkedDepsStatement, 1))
+                    let kind = String(cString: sqlite3_column_text(linkedDepsStatement, 2))
+                    let mode = String(cString: sqlite3_column_text(linkedDepsStatement, 3))
+                    let name = sqlite3_column_type(linkedDepsStatement, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(linkedDepsStatement, 4)) : nil
+                    let isSystem = sqlite3_column_int(linkedDepsStatement, 5) == 1
+
+                    // Only add if not already present from target_dependencies
+                    let existingDeps = dependencyGraph[targetGuid] ?? []
+                    let alreadyExists = existingDeps.contains { dep in
+                        (name != nil && dep.name == name) || dep.path == path
+                    }
+
+                    if !alreadyExists {
+                        let dep = GraphDependency(name: name, path: path, kind: kind, mode: mode, isSystem: isSystem)
+                        dependencyGraph[targetGuid, default: []].append(dep)
+                    }
+                }
             }
 
             var dependencies: [GraphDependency] = []
