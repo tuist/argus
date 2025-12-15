@@ -161,6 +161,9 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                 recordImportsIfCompileTask(msg: msg)
             }
 
+            // Extract linked dependencies from linker tasks
+            recordLinkedDependenciesIfLinkerTask(msg: msg)
+
         case let msg as BuildOperationTaskEnded:
             database.updateTaskEnded(
                 buildId: buildTraceId,
@@ -265,6 +268,326 @@ public final class BuildTraceRecorder: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    // MARK: - Linker dependency extraction
+
+    /// Checks if a task is a linker task and extracts linked dependencies if so.
+    private func recordLinkedDependenciesIfLinkerTask(msg: BuildOperationTaskStarted) {
+        // Check if this is a linker task (Ld for dynamic linking, Libtool for static archives)
+        let ruleInfo = msg.info.ruleInfo
+        guard ruleInfo.hasPrefix("Ld ") || ruleInfo.hasPrefix("Libtool ") else {
+            return
+        }
+
+        // Get the command line
+        guard let commandLine = msg.info.commandLineDisplayString else {
+            return
+        }
+
+        // Get target info
+        guard let targetId = msg.targetID else {
+            return
+        }
+
+        targetInfoLock.lock()
+        let cachedTargetInfo = targetInfo[targetId]
+        targetInfoLock.unlock()
+
+        guard let (_, targetGuid) = cachedTargetInfo else {
+            return
+        }
+
+        // Parse linker dependencies asynchronously
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+
+            let dependencies = LinkerCommandParser.parseLinkedDependencies(from: commandLine)
+
+            for dep in dependencies {
+                self.database.insertLinkedDependency(
+                    buildId: self.buildTraceId,
+                    targetGuid: targetGuid,
+                    dependencyPath: dep.path,
+                    linkKind: dep.kind,
+                    linkMode: dep.mode,
+                    dependencyName: dep.name,
+                    isSystem: dep.isSystem
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Linker Command Parser
+
+/// Parses linker command lines to extract linked dependency information.
+enum LinkerCommandParser {
+    struct LinkedDependency {
+        let path: String
+        let kind: String      // static, dynamic, framework
+        let mode: String      // normal, weak, reexport, merge
+        let name: String?
+        let isSystem: Bool
+    }
+
+    /// Parses a linker command line and extracts linked dependencies.
+    static func parseLinkedDependencies(from commandLine: String) -> [LinkedDependency] {
+        var dependencies: [LinkedDependency] = []
+        let args = splitCommandLine(commandLine)
+
+        var i = 0
+        while i < args.count {
+            let arg = args[i]
+
+            // Framework flags
+            if arg == "-framework" && i + 1 < args.count {
+                let name = args[i + 1]
+                dependencies.append(LinkedDependency(
+                    path: name,
+                    kind: "framework",
+                    mode: "normal",
+                    name: name,
+                    isSystem: isSystemFramework(name)
+                ))
+                i += 2
+                continue
+            }
+
+            if arg == "-weak_framework" && i + 1 < args.count {
+                let name = args[i + 1]
+                dependencies.append(LinkedDependency(
+                    path: name,
+                    kind: "framework",
+                    mode: "weak",
+                    name: name,
+                    isSystem: isSystemFramework(name)
+                ))
+                i += 2
+                continue
+            }
+
+            if arg == "-reexport_framework" && i + 1 < args.count {
+                let name = args[i + 1]
+                dependencies.append(LinkedDependency(
+                    path: name,
+                    kind: "framework",
+                    mode: "reexport",
+                    name: name,
+                    isSystem: isSystemFramework(name)
+                ))
+                i += 2
+                continue
+            }
+
+            // Library flags: -l<name>, -weak-l<name>, -reexport-l<name>
+            if arg.hasPrefix("-reexport-l") {
+                let name = String(arg.dropFirst("-reexport-l".count))
+                if !name.isEmpty {
+                    dependencies.append(LinkedDependency(
+                        path: name,
+                        kind: "dynamic",
+                        mode: "reexport",
+                        name: name,
+                        isSystem: false
+                    ))
+                }
+                i += 1
+                continue
+            }
+
+            if arg.hasPrefix("-weak-l") {
+                let name = String(arg.dropFirst("-weak-l".count))
+                if !name.isEmpty {
+                    dependencies.append(LinkedDependency(
+                        path: name,
+                        kind: "dynamic",
+                        mode: "weak",
+                        name: name,
+                        isSystem: false
+                    ))
+                }
+                i += 1
+                continue
+            }
+
+            if arg.hasPrefix("-l") && !arg.hasPrefix("-lazy") {
+                let name = String(arg.dropFirst("-l".count))
+                if !name.isEmpty {
+                    dependencies.append(LinkedDependency(
+                        path: name,
+                        kind: "dynamic",
+                        mode: "normal",
+                        name: name,
+                        isSystem: false
+                    ))
+                }
+                i += 1
+                continue
+            }
+
+            // Direct file paths: .a (static), .dylib (dynamic), .tbd (text-based stub)
+            if arg.hasSuffix(".a") && !arg.hasPrefix("-") {
+                let name = extractLibraryName(from: arg)
+                dependencies.append(LinkedDependency(
+                    path: arg,
+                    kind: "static",
+                    mode: "normal",
+                    name: name,
+                    isSystem: isSystemPath(arg)
+                ))
+                i += 1
+                continue
+            }
+
+            if arg.hasSuffix(".dylib") && !arg.hasPrefix("-") {
+                let name = extractLibraryName(from: arg)
+                dependencies.append(LinkedDependency(
+                    path: arg,
+                    kind: "dynamic",
+                    mode: "normal",
+                    name: name,
+                    isSystem: isSystemPath(arg)
+                ))
+                i += 1
+                continue
+            }
+
+            if arg.hasSuffix(".tbd") && !arg.hasPrefix("-") {
+                let name = extractLibraryName(from: arg)
+                dependencies.append(LinkedDependency(
+                    path: arg,
+                    kind: "dynamic",
+                    mode: "normal",
+                    name: name,
+                    isSystem: isSystemPath(arg)
+                ))
+                i += 1
+                continue
+            }
+
+            // Framework bundle paths (.framework)
+            if arg.contains(".framework") && !arg.hasPrefix("-") {
+                let name = extractFrameworkName(from: arg)
+                dependencies.append(LinkedDependency(
+                    path: arg,
+                    kind: "framework",
+                    mode: "normal",
+                    name: name,
+                    isSystem: isSystemPath(arg)
+                ))
+                i += 1
+                continue
+            }
+
+            i += 1
+        }
+
+        return dependencies
+    }
+
+    /// Splits a command line string into arguments, respecting quotes.
+    private static func splitCommandLine(_ commandLine: String) -> [String] {
+        var args: [String] = []
+        var current = ""
+        var inQuote = false
+        var quoteChar: Character = "\""
+
+        for char in commandLine {
+            if inQuote {
+                if char == quoteChar {
+                    inQuote = false
+                } else {
+                    current.append(char)
+                }
+            } else {
+                if char == "\"" || char == "'" {
+                    inQuote = true
+                    quoteChar = char
+                } else if char == " " || char == "\t" || char == "\n" {
+                    if !current.isEmpty {
+                        args.append(current)
+                        current = ""
+                    }
+                } else {
+                    current.append(char)
+                }
+            }
+        }
+
+        if !current.isEmpty {
+            args.append(current)
+        }
+
+        return args
+    }
+
+    /// Extracts a library name from a path (e.g., libFoo.a -> Foo).
+    private static func extractLibraryName(from path: String) -> String? {
+        let filename = (path as NSString).lastPathComponent
+        if filename.hasPrefix("lib") {
+            let name = String(filename.dropFirst(3))
+            if let dotIndex = name.lastIndex(of: ".") {
+                return String(name[..<dotIndex])
+            }
+            return name
+        }
+        if let dotIndex = filename.lastIndex(of: ".") {
+            return String(filename[..<dotIndex])
+        }
+        return filename
+    }
+
+    /// Extracts a framework name from a path (e.g., /path/to/Foo.framework/Foo -> Foo).
+    private static func extractFrameworkName(from path: String) -> String? {
+        // Look for .framework in the path
+        if let range = path.range(of: ".framework") {
+            let beforeFramework = path[..<range.lowerBound]
+            if let lastSlash = beforeFramework.lastIndex(of: "/") {
+                return String(beforeFramework[beforeFramework.index(after: lastSlash)...])
+            }
+            return String(beforeFramework)
+        }
+        return (path as NSString).lastPathComponent
+    }
+
+    /// Checks if a framework is a system framework.
+    private static func isSystemFramework(_ name: String) -> Bool {
+        // Common system frameworks
+        let systemFrameworks: Set<String> = [
+            "Foundation", "UIKit", "AppKit", "CoreFoundation", "CoreGraphics",
+            "CoreData", "CoreLocation", "CoreMedia", "CoreVideo", "CoreAudio",
+            "AVFoundation", "Security", "SystemConfiguration", "QuartzCore",
+            "Metal", "MetalKit", "SpriteKit", "SceneKit", "GameplayKit",
+            "WebKit", "SafariServices", "StoreKit", "CloudKit", "HealthKit",
+            "HomeKit", "MapKit", "PassKit", "EventKit", "AddressBook",
+            "Contacts", "ContactsUI", "Photos", "PhotosUI", "MediaPlayer",
+            "AssetsLibrary", "Accelerate", "OpenGL", "OpenGLES", "GLKit",
+            "AudioToolbox", "AudioUnit", "CoreAudioKit", "CoreMIDI",
+            "CoreBluetooth", "ExternalAccessory", "MultipeerConnectivity",
+            "NetworkExtension", "NotificationCenter", "Social", "Twitter",
+            "Accounts", "AdSupport", "iAd", "GameKit", "GameController",
+            "ReplayKit", "UserNotifications", "UserNotificationsUI",
+            "FileProvider", "FileProviderUI", "Intents", "IntentsUI",
+            "Speech", "Vision", "NaturalLanguage", "CoreML", "CreateML",
+            "ARKit", "RealityKit", "Combine", "SwiftUI", "WidgetKit",
+            "AppClip", "CarPlay", "ClassKit", "CoreNFC", "DeviceCheck",
+            "IdentityLookup", "Messages", "MessageUI", "PencilKit",
+            "PushKit", "WatchConnectivity", "WatchKit", "AuthenticationServices",
+            "CryptoKit", "LocalAuthentication", "BackgroundTasks", "LinkPresentation",
+            "UniformTypeIdentifiers", "OSLog", "os", "Darwin", "Dispatch",
+            "ObjectiveC", "CoreServices", "ApplicationServices", "IOKit"
+        ]
+        return systemFrameworks.contains(name)
+    }
+
+    /// Checks if a path is a system path.
+    private static func isSystemPath(_ path: String) -> Bool {
+        return path.hasPrefix("/System/") ||
+               path.hasPrefix("/usr/lib/") ||
+               path.hasPrefix("/Library/Developer/CommandLineTools/") ||
+               path.contains("/Xcode.app/Contents/Developer/Platforms/") ||
+               path.contains("/SDKs/")
     }
 }
 
