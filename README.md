@@ -1,5 +1,8 @@
 # Argus
 
+> [!IMPORTANT]
+> This is an experiment. We don't plan to maintain it long-term, but the learnings will feed back into Tuist, where we'll collect and expose build data in a structured, convenient format.
+
 > [!WARNING]
 > Argus is a fork of [swift-build](https://github.com/swiftlang/swift-build) that provides an agentic interface for AI agents to help you understand and optimize your Xcode builds. Since it relies on internal Xcode protocols, it may not work with all Xcode versions.
 
