@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2025-12-15
+### Details
+#### <!-- 1 -->🐛 Bug Fixes
+- Graph queries use target_dependencies and filter redundant-deps false positives by @pepicrft in [#14](https://github.com/tuist/argus/pull/14)
+
 ## [0.4.2] - 2025-12-13
 ### Details
 #### <!-- 3 -->📚 Documentation
@@ -262,6 +267,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * @kateinoigakukun made their first contribution
 * @heckj made their first contribution
 * @swift-ci made their first contribution
+[0.4.3]: https://github.com/tuist/argus/compare/0.4.2..0.4.3
 [0.4.2]: https://github.com/tuist/argus/compare/0.4.1..0.4.2
 [0.4.1]: https://github.com/tuist/argus/compare/0.4.0..0.4.1
 [0.4.0]: https://github.com/tuist/argus/compare/0.3.2..0.4.0
