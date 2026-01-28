@@ -48,8 +48,17 @@ final class BuildTraceDatabase: @unchecked Sendable {
             throw BuildTraceDatabaseError.openFailed(message)
         }
         self.db = db
+        try configurePragmas()
         try createTables()
         try runMigrations()
+    }
+
+    /// Configures SQLite pragmas for optimal performance and concurrency.
+    private func configurePragmas() throws {
+        // Enable WAL mode for better concurrent read/write access.
+        // This prevents locking conflicts when the recorder is writing
+        // while the CLI is reading. WAL mode must be set on every connection.
+        try execute("PRAGMA journal_mode = WAL")
     }
 
     deinit {

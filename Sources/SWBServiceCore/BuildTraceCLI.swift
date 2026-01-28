@@ -75,6 +75,7 @@ private func openDatabase() -> BuildTraceDatabase? {
         return try BuildTraceDatabase(path: defaultDatabasePath)
     } catch {
         print("Error: Could not open build trace database at \(defaultDatabasePath)")
+        print("Details: \(error)")
         print("Make sure you have run at least one build with tracing enabled.")
         return nil
     }
