@@ -68,7 +68,7 @@ jobs:
 
       - name: Setup Swift
         env:
-          SWIFT_VERSION: swift-DEVELOPMENT-SNAPSHOT-2026-01-09-a
+          SWIFT_VERSION: swift-DEVELOPMENT-SNAPSHOT-2026-01-28-a
         run: |
           # Download and install Swift development snapshot manually to avoid cache issues
           TOOLCHAIN_URL="https://download.swift.org/development/xcode/${SWIFT_VERSION}/${SWIFT_VERSION}-osx.pkg"
