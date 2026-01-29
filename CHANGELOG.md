@@ -5,91 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.3] - 2025-12-15
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
-- Graph queries use target_dependencies and filter redundant-deps false positives by @pepicrft in [#14](https://github.com/tuist/argus/pull/14)
-
-## [0.4.2] - 2025-12-13
-### Details
-#### <!-- 3 -->📚 Documentation
-- Add Build Graph Analysis to README and simplify migration by @pepicrft in [#13](https://github.com/tuist/argus/pull/13)
-
-## [0.4.1] - 2025-12-13
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
-- Robust schema migration for existing databases by @pepicrft in [#12](https://github.com/tuist/argus/pull/12)
-
-## [0.4.0] - 2025-12-13
+## [1.0.0] - 2026-01-29
 ### Details
 #### <!-- 0 -->🚀 Features
-- Add build graph and deps CLI commands for linking analysis by @pepicrft in [#11](https://github.com/tuist/argus/pull/11)
+- Add build graph and deps CLI commands for linking analysis by @pepicrft
+- Add import scanning for implicit dependency detection by @pepicrft
+- Add project correlation for grouping related builds by @pepicrft
+- Add build trace recording to SQLite for observability by @pepicrft
 
-## [0.3.2] - 2025-12-04
-### Details
 #### <!-- 1 -->🐛 Bug Fixes
-- Ensure build trace database flushes before shutdown by @pepicrft in [#10](https://github.com/tuist/argus/pull/10)
-
-## [0.3.1] - 2025-12-03
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
-- Use name-based matching for Swift Package implicit dependencies by @pepicrft in [#9](https://github.com/tuist/argus/pull/9)
-
-## [0.3.0] - 2025-12-03
-### Details
-#### <!-- 0 -->🚀 Features
-- Add import scanning for implicit dependency detection by @pepicrft in [#8](https://github.com/tuist/argus/pull/8)
-
-## [0.2.0] - 2025-12-02
-### Details
-#### <!-- 0 -->🚀 Features
-- Add project correlation for grouping related builds by @pepicrft in [#7](https://github.com/tuist/argus/pull/7)
-
-## [0.1.7] - 2025-11-29
-### Details
-#### <!-- 3 -->📚 Documentation
-- Use github backend for mise installation by @pepicrft
-
-## [0.1.6] - 2025-11-29
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
+- Revert to swift-tools-version 6.0 and use Xcode 26.2 from the runner by @pepicrft
+- Use Swift 6.2.3 release instead of development snapshot by @pepicrft
+- Update Swift toolchain to 2026-01-28 snapshot for tools version 6.2 support by @pepicrft
+- Update Package.swift tools version to 6.2 for swift-tools-protocols compatibility by @pepicrft
+- Update Swift toolchain to support tools version 6.2 by @pepicrft
+- Enable WAL mode to prevent flaky database locking errors by @pepicrft in [#15](https://github.com/tuist/argus/pull/15)
+- Graph queries use target_dependencies and filter redundant-deps false positives by @pepicrft
+- Robust schema migration for existing databases by @pepicrft
+- Ensure build trace database flushes before shutdown by @pepicrft
+- Use name-based matching for Swift Package implicit dependencies by @pepicrft
 - Use available Swift snapshot (2025-11-26-a) by @pepicrft
 - Manually download Swift toolchain to bypass corrupted cache by @pepicrft
 - Disable swift snapshot cache to avoid corruption by @pepicrft
 - Use Xcode's Swift instead of development snapshot by @pepicrft
 - Include resource bundles in tarball by @pepicrft
-
-## [0.1.5] - 2025-11-27
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
 - Build first, then create release if successful by @pepicrft
-
-## [0.1.4] - 2025-11-27
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
 - Use SwiftyLab/setup-swift for development snapshots by @pepicrft
-
-## [0.1.3] - 2025-11-27
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
-- Use Swift nightly toolchain for builds by @pepicrft in [#6](https://github.com/tuist/argus/pull/6)
-
-## [0.1.2] - 2025-11-27
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
-- Use Swift 5 language mode to avoid concurrency errors by @pepicrft in [#5](https://github.com/tuist/argus/pull/5)
-
-## [0.1.1] - 2025-11-27
-### Details
-#### <!-- 1 -->🐛 Bug Fixes
-- Use Xcode 16.1 and macos-15 runners for release builds by @pepicrft in [#4](https://github.com/tuist/argus/pull/4)
-
-## [0.1.0] - 2025-11-27
-### Details
-#### <!-- 0 -->🚀 Features
-- Add build trace recording to SQLite for observability by @pepicrft in [#3](https://github.com/tuist/argus/pull/3)
-
-#### <!-- 1 -->🐛 Bug Fixes
+- Use Swift nightly toolchain for builds by @pepicrft
+- Use Swift 5 language mode to avoid concurrency errors by @pepicrft
+- Use Xcode 16.1 and macos-15 runners for release builds by @pepicrft
 - Multiple properties in the SWBCore functions by @MojtabaHs
 - `buildFilesContext.belongsToPreferredArch` anywhere in the package by @MojtabaHs
 - A typo in `dependencyDataFormat` by @MojtabaHs
@@ -97,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A typo in the warning explanation by @MojtabaHs
 
 #### <!-- 10 -->💼 Other
+- Update to 0.0.10 by @owenv
+- Send target change notification when build description is regenerated by @owenv
+- Address and thread sanitizers config changes by @bkhouri
 - //164182636 Pass back PRODUCT_MODULE_NAME to previews as target dependency info by @jonathanpenn
 - Resolve miscellaneous Swift 6 adoption issues by @owenv
 - Vend counters as strings to avoid making SWBProtocol part of the public interface for SwiftBuild by @mirza-garibovic
@@ -159,6 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix job key `Indices` by @MojtabaHs
 
 #### <!-- 3 -->📚 Documentation
+- Add Build Graph Analysis to README and simplify migration by @pepicrft
+- Use github backend for mise installation by @pepicrft
 - Fix all remaining comment typos in the source directory by @MojtabaHs
 - Fix spelling errors in `SWBUniversalPlatform` documentation by @MojtabaHs
 - Fix inline documentations of SBWCore by @MojtabaHs
@@ -204,33 +153,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## New Contributors
 * @pepicrft made their first contribution
-* @neonichu made their first contribution
+* @DanBlackwell made their first contribution
 * @jakepetroules made their first contribution
-* @bkhouri made their first contribution
-* @owenv made their first contribution
+* @cmcgee1024 made their first contribution
 * @mhrawdon made their first contribution
+* @Tantalum73 made their first contribution
+* @DougGregor made their first contribution
+* @owenv made their first contribution
+* @daveinglis made their first contribution
+* @shahmishal made their first contribution
+* @jonathanpenn made their first contribution
+* @matthewseaman made their first contribution
+* @asevko-ydx made their first contribution
 * @ahoppen made their first contribution
+* @justin-s-kang made their first contribution
+* @bkhouri made their first contribution
+* @svmkr-dev made their first contribution
+* @cachemeifyoucan made their first contribution
+* @usama54321 made their first contribution
+* @ made their first contribution
+* @ian-twilightcoder made their first contribution
+* @bripeticca made their first contribution
+* @neonichu made their first contribution
 * @vsapsai made their first contribution
 * @rconnell9 made their first contribution
-* @jonathanpenn made their first contribution
 * @kcieplak made their first contribution
 * @Catfish-Man made their first contribution
-* @cachemeifyoucan made their first contribution
-* @daveinglis made their first contribution
-* @matthewseaman made their first contribution
 * @incertum made their first contribution
 * @cyndyishida made their first contribution
 * @Steelskin made their first contribution
 * @xedin made their first contribution
 * @egorzhdan made their first contribution
 * @danliew-apple made their first contribution
-* @DougGregor made their first contribution
 * @mirza-garibovic made their first contribution
 * @hamishknight made their first contribution
 * @bob-wilson made their first contribution
-* @cmcgee1024 made their first contribution
 * @sina-mahdavi made their first contribution
-* @shahmishal made their first contribution
 * @brooke-callahan made their first contribution
 * @plemarquand made their first contribution
 * @bnbarham made their first contribution
@@ -240,8 +198,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * @rauhul made their first contribution
 * @baujla made their first contribution
 * @devincoughlin made their first contribution
-* @ made their first contribution
-* @ian-twilightcoder made their first contribution
 * @stephenverderame made their first contribution
 * @xymus made their first contribution
 * @jansvoboda11 made their first contribution
@@ -253,7 +209,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * @akyrtzi made their first contribution
 * @compnerd made their first contribution
 * @benlangmuir made their first contribution
-* @usama54321 made their first contribution
 * @aciidgh made their first contribution
 * @thetruestblue made their first contribution
 * @pmattos made their first contribution
@@ -267,20 +222,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * @kateinoigakukun made their first contribution
 * @heckj made their first contribution
 * @swift-ci made their first contribution
-[0.4.3]: https://github.com/tuist/argus/compare/0.4.2..0.4.3
-[0.4.2]: https://github.com/tuist/argus/compare/0.4.1..0.4.2
-[0.4.1]: https://github.com/tuist/argus/compare/0.4.0..0.4.1
-[0.4.0]: https://github.com/tuist/argus/compare/0.3.2..0.4.0
-[0.3.2]: https://github.com/tuist/argus/compare/0.3.1..0.3.2
-[0.3.1]: https://github.com/tuist/argus/compare/0.3.0..0.3.1
-[0.3.0]: https://github.com/tuist/argus/compare/0.2.0..0.3.0
-[0.2.0]: https://github.com/tuist/argus/compare/0.1.7..0.2.0
-[0.1.7]: https://github.com/tuist/argus/compare/0.1.6..0.1.7
-[0.1.6]: https://github.com/tuist/argus/compare/0.1.5..0.1.6
-[0.1.5]: https://github.com/tuist/argus/compare/0.1.4..0.1.5
-[0.1.4]: https://github.com/tuist/argus/compare/0.1.3..0.1.4
-[0.1.3]: https://github.com/tuist/argus/compare/0.1.2..0.1.3
-[0.1.2]: https://github.com/tuist/argus/compare/0.1.1..0.1.2
-[0.1.1]: https://github.com/tuist/argus/compare/0.1.0..0.1.1
+[1.0.0]: https://github.com/tuist/argus/compare/0.4.3..1.0.0
 
 <!-- generated by git-cliff -->
