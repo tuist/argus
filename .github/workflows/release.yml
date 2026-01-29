@@ -68,17 +68,17 @@ jobs:
 
       - name: Setup Swift
         env:
-          SWIFT_VERSION: swift-DEVELOPMENT-SNAPSHOT-2026-01-28-a
+          SWIFT_VERSION: "6.2.3"
         run: |
-          # Download and install Swift development snapshot manually to avoid cache issues
-          TOOLCHAIN_URL="https://download.swift.org/development/xcode/${SWIFT_VERSION}/${SWIFT_VERSION}-osx.pkg"
+          # Download and install Swift 6.2.3 release
+          TOOLCHAIN_URL="https://download.swift.org/swift-${SWIFT_VERSION}-release/xcode/swift-${SWIFT_VERSION}-RELEASE/swift-${SWIFT_VERSION}-RELEASE-osx.pkg"
           echo "Downloading Swift toolchain from ${TOOLCHAIN_URL}"
           curl -fL -o swift.pkg "${TOOLCHAIN_URL}"
           sudo installer -pkg swift.pkg -target /
           # Verify installation
-          /Library/Developer/Toolchains/${SWIFT_VERSION}.xctoolchain/usr/bin/swift --version
+          /Library/Developer/Toolchains/swift-${SWIFT_VERSION}-RELEASE.xctoolchain/usr/bin/swift --version
           # Set toolchain for subsequent steps
-          echo "TOOLCHAINS=${SWIFT_VERSION}" >> $GITHUB_ENV
+          echo "TOOLCHAINS=swift-${SWIFT_VERSION}-RELEASE" >> $GITHUB_ENV
 
       - name: Build release binary
         run: |
